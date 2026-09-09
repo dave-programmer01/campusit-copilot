@@ -1,0 +1,69 @@
+package com.david.campusitcopilot.search;
+
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
+import org.springframework.ai.document.Document;
+
+import java.util.List;
+import java.util.Map;
+
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyDouble;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.*;
+
+class SearchControllerTest {
+
+    private RetrievalService retrievalService;
+    private SearchController searchController;
+
+    @BeforeEach
+    void setUp() {
+        retrievalService = mock(RetrievalService.class);
+        searchController = new SearchController(retrievalService);
+    }
+
+    @Test
+    void testSearchWithAllParams() {
+        Document doc = new Document("Guide content here", Map.of("source", "guide.md", "device", "macbook"));
+        when(retrievalService.search(eq("query"), any(FilterSpec.class), anyInt(), anyDouble()))
+                .thenReturn(List.of(doc));
+
+        List<SearchController.SearchHit> hits = searchController.search("query", "wifi", "macbook", null);
+
+        assertEquals(1, hits.size());
+        assertEquals("guide.md", hits.get(0).source());
+        assertEquals("macbook", hits.get(0).device());
+        assertEquals("Guide content here", hits.get(0).snippet());
+
+        ArgumentCaptor<FilterSpec> captor = ArgumentCaptor.forClass(FilterSpec.class);
+        verify(retrievalService).search(eq("query"), captor.capture(), eq(3), eq(0.0));
+        FilterSpec spec = captor.getValue();
+        assertEquals("wifi", spec.topic());
+        assertEquals("macbook", spec.device());
+        assertNull(spec.subtopic());
+    }
+
+    @Test
+    void testSearchLoginSubtopic() {
+        Document doc = new Document("Password reset guide content", Map.of("source", "reset.md"));
+        when(retrievalService.search(eq("reset password"), any(FilterSpec.class), anyInt(), anyDouble()))
+                .thenReturn(List.of(doc));
+
+        List<SearchController.SearchHit> hits = searchController.search("reset password", "login", null, "reset");
+
+        assertEquals(1, hits.size());
+        assertEquals("reset.md", hits.get(0).source());
+        assertNull(hits.get(0).device());
+
+        ArgumentCaptor<FilterSpec> captor = ArgumentCaptor.forClass(FilterSpec.class);
+        verify(retrievalService).search(eq("reset password"), captor.capture(), eq(3), eq(0.0));
+        FilterSpec spec = captor.getValue();
+        assertEquals("login", spec.topic());
+        assertNull(spec.device());
+        assertEquals("reset", spec.subtopic());
+    }
+}

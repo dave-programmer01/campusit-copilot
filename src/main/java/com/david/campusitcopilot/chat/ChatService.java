@@ -94,7 +94,9 @@ public class ChatService {
             }
             filterSpec = FilterSpec.wifi(device);
         } else if (intent.isLogin()) {
-            filterSpec = FilterSpec.login(intent.subtopic());
+            filterSpec = FilterSpec.login(intent.subtopic(), intent.account());
+        } else if (intent.isMfa()) {
+            filterSpec = FilterSpec.mfa(intent.account());
         } else {
             return EMPTY_CONTEXT;
         }

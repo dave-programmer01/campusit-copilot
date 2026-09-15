@@ -37,35 +37,46 @@ public class IngestionService {
     public int ingest() {
         Resource[] guides;
         try {
-            guides = resourceResolver.getResources("classpath:/*.md");
+            guides = resourceResolver.getResources("classpath*:/*.md");
+            if (guides == null || guides.length == 0) {
+                guides = resourceResolver.getResources("classpath:/*.md");
+            }
         } catch (Exception e) {
             throw new IllegalStateException("Unable to locate markdown guides on the classpath", e);
         }
 
         // Purge previously ingested vectors first so re-running this (e.g. after editing a
         // guide) replaces rather than duplicates them. One delete per topic — the wifi delete
-        // won't touch login rows, so login needs its own delete too.
+        // won't touch login rows, so login and mfa need their own deletes too.
         deleteTopic("wifi");
         deleteTopic("login");
+        deleteTopic("mfa");
 
         int totalChunks = 0;
         for (Resource guide : guides) {
             String fileName = guide.getFilename();
-            if (fileName == null) {
+            if (fileName == null || fileName.equalsIgnoreCase("readme.md") || fileName.equalsIgnoreCase("help.md")) {
                 continue;
             }
             TextReader reader = new TextReader(guide);
             reader.getCustomMetadata().put("source", fileName);
 
-            // Fork on the metadata bundle: login docs get topic=login + subtopic (no device),
-            // everything else stays wifi with topic=wifi + device (no subtopic). Only the keys
-            // that apply to each topic are set, so login chunks never carry a stray device field.
+            // Fork on the metadata bundle:
+            // - mfa docs get topic=mfa + account (cuny or microsoft365) (no device, no subtopic)
+            // - login docs get topic=login + subtopic + account=lehman (no device)
+            // - wifi docs get topic=wifi + device (no subtopic, no account)
             String description;
-            if (isLoginDoc(fileName)) {
+            if (isMfaDoc(fileName)) {
+                String account = accountFromMfaFileName(fileName);
+                reader.getCustomMetadata().put("topic", "mfa");
+                reader.getCustomMetadata().put("account", account);
+                description = "account=" + account;
+            } else if (isLoginDoc(fileName)) {
                 String subtopic = subtopicFromFileName(fileName);
                 reader.getCustomMetadata().put("topic", "login");
                 reader.getCustomMetadata().put("subtopic", subtopic);
-                description = "subtopic=" + subtopic;
+                reader.getCustomMetadata().put("account", "lehman");
+                description = "subtopic=" + subtopic + ", account=lehman";
             } else {
                 String device = deviceFromFileName(fileName);
                 reader.getCustomMetadata().put("topic", "wifi");
@@ -92,6 +103,21 @@ public class IngestionService {
         } catch (Exception e) {
             log.warn("Could not clear existing topic={} vectors (continuing): {}", topic, e.getMessage());
         }
+    }
+
+    static boolean isMfaDoc(String fileName) {
+        return fileName.toLowerCase(Locale.ROOT).contains("mfa");
+    }
+
+    static String accountFromMfaFileName(String fileName) {
+        String lower = fileName.toLowerCase(Locale.ROOT);
+        if (lower.contains("cuny")) {
+            return "cuny";
+        }
+        if (lower.contains("microsoft") || lower.contains("365")) {
+            return "microsoft365";
+        }
+        return "cuny";
     }
 
     static boolean isLoginDoc(String fileName) {

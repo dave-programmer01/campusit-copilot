@@ -20,9 +20,13 @@ class ConversationStateTest {
         assertNull(state.getDevice());
         assertTrue(state.subtopic().isEmpty());
         assertNull(state.getSubtopic());
+        assertTrue(state.account().isEmpty());
+        assertNull(state.getAccount());
         assertEquals(Stage.TRIAGE, state.getStage());
         assertEquals(0, state.getDeviceRetryCount());
         assertTrue(state.deviceRetryCount().isEmpty());
+        assertEquals(0, state.getAccountRetryCount());
+        assertTrue(state.accountRetryCount().isEmpty());
         assertTrue(state.messages().isEmpty());
         assertEquals("", state.latestUserMessage());
     }
@@ -33,8 +37,10 @@ class ConversationStateTest {
                 "topic", "wifi",
                 "device", "macbook",
                 "subtopic", "activation",
+                "account", "lehman",
                 "stage", Stage.AWAITING_DEVICE,
                 "deviceRetryCount", 1,
+                "accountRetryCount", 0,
                 "messages", List.of(new ChatMessage("user", "first message"))
         );
 
@@ -42,17 +48,21 @@ class ConversationStateTest {
         assertEquals("wifi", state1.getTopic());
         assertEquals("macbook", state1.getDevice());
         assertEquals("activation", state1.getSubtopic());
+        assertEquals("lehman", state1.getAccount());
         assertEquals(Stage.AWAITING_DEVICE, state1.getStage());
         assertEquals(1, state1.getDeviceRetryCount());
+        assertEquals(0, state1.getAccountRetryCount());
         assertEquals(1, state1.messages().size());
 
         // Update with new values
         Map<String, Object> updates = Map.of(
-                "topic", "login",
+                "topic", "mfa",
                 "device", "iphone",
                 "subtopic", "reset",
-                "stage", Stage.IN_RESET,
+                "account", "cuny",
+                "stage", Stage.IN_MFA,
                 "deviceRetryCount", 0,
+                "accountRetryCount", 1,
                 "messages", List.of(new ChatMessage("assistant", "second message"))
         );
 
@@ -60,11 +70,13 @@ class ConversationStateTest {
         ConversationState state2 = new ConversationState(updatedData);
 
         // Scalars must be replaced, not appended or converted to list
-        assertEquals("login", state2.getTopic());
+        assertEquals("mfa", state2.getTopic());
         assertEquals("iphone", state2.getDevice());
         assertEquals("reset", state2.getSubtopic());
-        assertEquals(Stage.IN_RESET, state2.getStage());
+        assertEquals("cuny", state2.getAccount());
+        assertEquals(Stage.IN_MFA, state2.getStage());
         assertEquals(0, state2.getDeviceRetryCount());
+        assertEquals(1, state2.getAccountRetryCount());
 
         // Messages list MUST append
         assertEquals(2, state2.messages().size());
@@ -76,44 +88,44 @@ class ConversationStateTest {
     @Test
     void testTypedGettersAndLatestUserMessage() {
         ConversationState state = new ConversationState(Map.of(
-                "topic", "wifi",
-                "device", "windows-11",
-                "stage", Stage.IN_WIFI_WALK,
+                "topic", "mfa",
+                "account", "microsoft365",
+                "stage", Stage.IN_MFA,
                 "messages", List.of(
-                        new ChatMessage("user", "help with wifi"),
-                        new ChatMessage("assistant", "what device?"),
-                        new ChatMessage("user", "windows 11"),
+                        new ChatMessage("user", "help with mfa on outlook"),
                         new ChatMessage("assistant", "here are steps")
                 )
         ));
 
         assertTrue(state.topic().isPresent());
-        assertEquals("wifi", state.topic().get());
-        assertEquals("wifi", state.getTopic());
+        assertEquals("mfa", state.topic().get());
+        assertEquals("mfa", state.getTopic());
 
-        assertTrue(state.device().isPresent());
-        assertEquals("windows-11", state.device().get());
-        assertEquals("windows-11", state.getDevice());
+        assertTrue(state.account().isPresent());
+        assertEquals("microsoft365", state.account().get());
+        assertEquals("microsoft365", state.getAccount());
 
         assertTrue(state.subtopic().isEmpty());
         assertNull(state.getSubtopic());
 
         assertTrue(state.stage().isPresent());
-        assertEquals(Stage.IN_WIFI_WALK, state.stage().get());
-        assertEquals(Stage.IN_WIFI_WALK, state.getStage());
+        assertEquals(Stage.IN_MFA, state.stage().get());
+        assertEquals(Stage.IN_MFA, state.getStage());
 
-        assertEquals("windows 11", state.latestUserMessage());
+        assertEquals("help with mfa on outlook", state.latestUserMessage());
     }
 
     @Test
     void testSchemaHasExactChannelsWithoutDuplication() {
-        assertEquals(6, ConversationState.SCHEMA.size());
+        assertEquals(8, ConversationState.SCHEMA.size());
         assertTrue(ConversationState.SCHEMA.containsKey("messages"));
         assertTrue(ConversationState.SCHEMA.containsKey("topic"));
         assertTrue(ConversationState.SCHEMA.containsKey("device"));
         assertTrue(ConversationState.SCHEMA.containsKey("subtopic"));
+        assertTrue(ConversationState.SCHEMA.containsKey("account"));
         assertTrue(ConversationState.SCHEMA.containsKey("stage"));
         assertTrue(ConversationState.SCHEMA.containsKey("deviceRetryCount"));
+        assertTrue(ConversationState.SCHEMA.containsKey("accountRetryCount"));
     }
 
     @Test

@@ -32,7 +32,7 @@ class SearchControllerTest {
         when(retrievalService.search(eq("query"), any(FilterSpec.class), anyInt(), anyDouble()))
                 .thenReturn(List.of(doc));
 
-        List<SearchController.SearchHit> hits = searchController.search("query", "wifi", "macbook", null);
+        List<SearchController.SearchHit> hits = searchController.search("query", "wifi", "macbook", null, null);
 
         assertEquals(1, hits.size());
         assertEquals("guide.md", hits.get(0).source());
@@ -45,6 +45,7 @@ class SearchControllerTest {
         assertEquals("wifi", spec.topic());
         assertEquals("macbook", spec.device());
         assertNull(spec.subtopic());
+        assertNull(spec.account());
     }
 
     @Test
@@ -53,7 +54,7 @@ class SearchControllerTest {
         when(retrievalService.search(eq("reset password"), any(FilterSpec.class), anyInt(), anyDouble()))
                 .thenReturn(List.of(doc));
 
-        List<SearchController.SearchHit> hits = searchController.search("reset password", "login", null, "reset");
+        List<SearchController.SearchHit> hits = searchController.search("reset password", "login", null, "reset", "lehman");
 
         assertEquals(1, hits.size());
         assertEquals("reset.md", hits.get(0).source());
@@ -65,5 +66,26 @@ class SearchControllerTest {
         assertEquals("login", spec.topic());
         assertNull(spec.device());
         assertEquals("reset", spec.subtopic());
+        assertEquals("lehman", spec.account());
+    }
+
+    @Test
+    void testSearchMfaWithAccount() {
+        Document doc = new Document("CUNY Login MFA steps", Map.of("source", "CUNY-Login-MFA-Setup.md"));
+        when(retrievalService.search(eq("MFA error"), any(FilterSpec.class), anyInt(), anyDouble()))
+                .thenReturn(List.of(doc));
+
+        List<SearchController.SearchHit> hits = searchController.search("MFA error", "mfa", null, null, "cuny");
+
+        assertEquals(1, hits.size());
+        assertEquals("CUNY-Login-MFA-Setup.md", hits.get(0).source());
+
+        ArgumentCaptor<FilterSpec> captor = ArgumentCaptor.forClass(FilterSpec.class);
+        verify(retrievalService).search(eq("MFA error"), captor.capture(), eq(3), eq(0.0));
+        FilterSpec spec = captor.getValue();
+        assertEquals("mfa", spec.topic());
+        assertNull(spec.device());
+        assertNull(spec.subtopic());
+        assertEquals("cuny", spec.account());
     }
 }

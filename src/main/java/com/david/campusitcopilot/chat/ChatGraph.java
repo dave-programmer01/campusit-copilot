@@ -57,6 +57,9 @@ public class ChatGraph {
     public static final String DIAGNOSTIC_PROMPT =
             "quick check — when you try to sign into your Lehman email or the portal, does that password work?";
 
+    public static final String ACCOUNT_CHECK_PROMPT =
+            "quick q — is this for your CUNY login (CUNYfirst, Brightspace, Lehman 360, Zoom) or your Microsoft/email login (Outlook, Teams, student email)?";
+
     public static final String GREETING_PROMPT =
             "hey! how can i help you today? let me know what tech issue you're running into (wifi, lehman login, passwords, etc.).";
 
@@ -115,11 +118,13 @@ public class ChatGraph {
             workflow.addNode("triage_intent", node_async(this::triageNode));
             workflow.addNode("handle_device", node_async(this::handleDeviceNode));
             workflow.addNode("handle_diagnostic", node_async(this::handleDiagnosticNode));
+            workflow.addNode("handle_account", node_async(this::handleAccountNode));
 
             // Terminal response nodes
             workflow.addNode("device_check", node_async(this::deviceCheckNode));
             workflow.addNode("device_ack_check", node_async(this::deviceAckCheckNode));
             workflow.addNode("diagnostic", node_async(this::diagnosticNode));
+            workflow.addNode("account_check", node_async(this::accountCheckNode));
             workflow.addNode("retrieve_respond", node_async(this::retrieveRespondNode));
             workflow.addNode("greeting", node_async(this::greetingNode));
             workflow.addNode("aside", node_async(this::asideNode));
@@ -136,7 +141,9 @@ public class ChatGraph {
                             "triage_intent", "triage_intent",
                             "handle_device", "handle_device",
                             "handle_diagnostic", "handle_diagnostic",
+                            "handle_account", "handle_account",
                             "diagnostic", "diagnostic",
+                            "account_check", "account_check",
                             "retrieve_respond", "retrieve_respond",
                             "aside", "aside",
                             "fallback", "fallback"
@@ -150,6 +157,7 @@ public class ChatGraph {
                     Map.of(
                             "device_check", "device_check",
                             "diagnostic", "diagnostic",
+                            "account_check", "account_check",
                             "retrieve_respond", "retrieve_respond",
                             "greeting", "greeting",
                             "fallback", "fallback"
@@ -179,10 +187,22 @@ public class ChatGraph {
                     )
             );
 
+            // Conditional routing after account handling
+            workflow.addConditionalEdges(
+                    "handle_account",
+                    edge_async(this::routeAfterAccount),
+                    Map.of(
+                            "account_check", "account_check",
+                            "retrieve_respond", "retrieve_respond",
+                            "fallback", "fallback"
+                    )
+            );
+
             // Terminal edges to END
             workflow.addEdge("device_check", END);
             workflow.addEdge("device_ack_check", END);
             workflow.addEdge("diagnostic", END);
+            workflow.addEdge("account_check", END);
             workflow.addEdge("retrieve_respond", END);
             workflow.addEdge("greeting", END);
             workflow.addEdge("aside", END);
@@ -199,8 +219,8 @@ public class ChatGraph {
     }
 
     public Map<String, Object> routerNode(ConversationState state) {
-        log.info("Router node: evaluating stage={}, topic={}, device={}, subtopic={}",
-                state.getStage(), state.getTopic(), state.getDevice(), state.getSubtopic());
+        log.info("Router node: evaluating stage={}, topic={}, device={}, subtopic={}, account={}",
+                state.getStage(), state.getTopic(), state.getDevice(), state.getSubtopic(), state.getAccount());
         return Map.of();
     }
 
@@ -220,11 +240,13 @@ public class ChatGraph {
         if (intent == null) {
             intent = Intent.unknown();
         }
-        log.info("Triage node: IntentRouter classified topic={}, subtopic={}", intent.topic(), intent.subtopic());
+        log.info("Triage node: IntentRouter classified topic={}, subtopic={}, account={}",
+                intent.topic(), intent.subtopic(), intent.account());
 
         Map<String, Object> updates = new HashMap<>();
         if (state.getStage() == Stage.FALLBACK) {
             updates.put("deviceRetryCount", 0);
+            updates.put("accountRetryCount", 0);
         }
         if (intent.isWifi()) {
             updates.put("topic", "wifi");
@@ -234,10 +256,24 @@ public class ChatGraph {
                     updates.put("device", detected);
                 }
             }
+        } else if (intent.isMfa()) {
+            updates.put("topic", "mfa");
+            if (state.getAccount() == null) {
+                String detected = intent.account() != null ? intent.account() : AccountDetector.detect(state.latestUserMessage());
+                if (detected != null) {
+                    updates.put("account", detected);
+                }
+            }
         } else if (intent.isLogin()) {
             updates.put("topic", "login");
             if (intent.subtopic() != null) {
                 updates.put("subtopic", intent.subtopic());
+            }
+            if (intent.account() != null) {
+                updates.put("account", intent.account());
+            } else if (state.getAccount() == null) {
+                String detected = AccountDetector.detect(state.latestUserMessage());
+                updates.put("account", detected != null ? detected : "lehman");
             }
         } else if (intent.isGreeting()) {
             updates.put("topic", "greeting");
@@ -364,6 +400,53 @@ public class ChatGraph {
         return updates;
     }
 
+    public Map<String, Object> handleAccountNode(ConversationState state) {
+        String msg = state.latestUserMessage();
+        Map<String, Object> updates = new HashMap<>();
+
+        if (DiagnosticClassifier.isOutOfBand(msg)) {
+            log.info("Handle-account node: out-of-band input detected, routing to fallback");
+            updates.put("stage", Stage.FALLBACK);
+            updates.put("accountRetryCount", 0);
+            return updates;
+        }
+
+        String detected = AccountDetector.detect(msg);
+        if (detected != null) {
+            log.info("Handle-account node: detected account='{}'", detected);
+            updates.put("account", detected);
+            if ("mfa".equalsIgnoreCase(state.getTopic())) {
+                updates.put("stage", Stage.IN_MFA);
+            } else if ("login".equalsIgnoreCase(state.getTopic())) {
+                if ("reset".equalsIgnoreCase(state.getSubtopic())) {
+                    updates.put("stage", Stage.IN_RESET);
+                } else if ("activation".equalsIgnoreCase(state.getSubtopic())) {
+                    updates.put("stage", Stage.IN_ACTIVATION);
+                } else {
+                    updates.put("stage", Stage.IN_RESET);
+                }
+            } else {
+                updates.put("stage", Stage.IN_MFA);
+            }
+            updates.put("accountRetryCount", 0);
+            return updates;
+        }
+
+        int currentCount = state.getAccountRetryCount();
+        int newCount = currentCount + 1;
+        if (newCount >= 2) {
+            log.info("Handle-account node: failed account attempts reached {} -> routing to fallback", newCount);
+            updates.put("stage", Stage.FALLBACK);
+            updates.put("accountRetryCount", newCount);
+            return updates;
+        } else {
+            log.info("Handle-account node: account could not be detected from '{}' (attempt {}) -> re-asking", msg, newCount);
+            updates.put("stage", Stage.AWAITING_ACCOUNT);
+            updates.put("accountRetryCount", newCount);
+            return updates;
+        }
+    }
+
     /**
      * Device-check node — if topic=wifi and device null, ask for device; set stage=AWAITING_DEVICE.
      */
@@ -401,24 +484,39 @@ public class ChatGraph {
     }
 
     /**
+     * Account-check node — asks for account disambiguation (CUNY vs Microsoft/email) and sets stage=AWAITING_ACCOUNT.
+     */
+    public Map<String, Object> accountCheckNode(ConversationState state) {
+        log.info("Account-check node: asking for account disambiguation and setting stage=AWAITING_ACCOUNT");
+        ChatMessage assistantMsg = new ChatMessage("assistant", ACCOUNT_CHECK_PROMPT);
+        Map<String, Object> updates = new HashMap<>();
+        updates.put("stage", Stage.AWAITING_ACCOUNT);
+        updates.put("messages", List.of(assistantMsg));
+        return updates;
+    }
+
+    /**
      * Retrieve-respond node — build FilterSpec from state, retrieve, generate the walk.
      */
     public Map<String, Object> retrieveRespondNode(ConversationState state) {
-        log.info("Retrieve-respond node: resolving filter from state (topic={}, device={}, subtopic={}, stage={})",
-                state.getTopic(), state.getDevice(), state.getSubtopic(), state.getStage());
+        log.info("Retrieve-respond node: resolving filter from state (topic={}, device={}, subtopic={}, account={}, stage={})",
+                state.getTopic(), state.getDevice(), state.getSubtopic(), state.getAccount(), state.getStage());
         String topic = state.getTopic();
         String device = state.getDevice();
         String subtopic = state.getSubtopic();
+        String account = state.getAccount();
         Stage currentStage = state.getStage();
         Stage targetStage = currentStage;
 
-        if (currentStage == Stage.TRIAGE || currentStage == Stage.FALLBACK) {
+        if (currentStage == Stage.TRIAGE || currentStage == Stage.FALLBACK || currentStage == Stage.AWAITING_ACCOUNT) {
             if ("wifi".equalsIgnoreCase(topic)) {
                 targetStage = Stage.IN_WIFI_WALK;
             } else if ("login".equalsIgnoreCase(topic) && "reset".equalsIgnoreCase(subtopic)) {
                 targetStage = Stage.IN_RESET;
             } else if ("login".equalsIgnoreCase(topic) && "activation".equalsIgnoreCase(subtopic)) {
                 targetStage = Stage.IN_ACTIVATION;
+            } else if ("mfa".equalsIgnoreCase(topic)) {
+                targetStage = Stage.IN_MFA;
             } else {
                 targetStage = Stage.IN_WIFI_WALK;
             }
@@ -428,9 +526,11 @@ public class ChatGraph {
         if ("wifi".equalsIgnoreCase(topic)) {
             filterSpec = FilterSpec.wifi(device);
         } else if ("login".equalsIgnoreCase(topic)) {
-            filterSpec = FilterSpec.login(subtopic);
+            filterSpec = FilterSpec.login(subtopic, account);
+        } else if ("mfa".equalsIgnoreCase(topic)) {
+            filterSpec = FilterSpec.mfa(account);
         } else {
-            filterSpec = new FilterSpec(topic, device, subtopic);
+            filterSpec = new FilterSpec(topic, device, subtopic, account);
         }
 
         String searchQuery = StringUtils.hasText(state.latestUserMessage())
@@ -548,13 +648,16 @@ public class ChatGraph {
         if (stage == Stage.AWAITING_DIAGNOSTIC) {
             return "handle_diagnostic";
         }
+        if (stage == Stage.AWAITING_ACCOUNT) {
+            return "handle_account";
+        }
         if (stage == Stage.IN_WIFI_WALK) {
             if (DiagnosticClassifier.isLoginOrPasswordIssue(latestUserMsg)) {
                 return "diagnostic";
             }
             return "retrieve_respond";
         }
-        if (stage == Stage.IN_RESET || stage == Stage.IN_ACTIVATION) {
+        if (stage == Stage.IN_RESET || stage == Stage.IN_ACTIVATION || stage == Stage.IN_MFA) {
             return "retrieve_respond";
         }
         return "triage_intent";
@@ -564,8 +667,9 @@ public class ChatGraph {
         String topic = state.getTopic();
         String subtopic = state.getSubtopic();
         String device = state.getDevice();
+        String account = state.getAccount();
 
-        log.info("Route after triage: topic={}, device={}, subtopic={}", topic, device, subtopic);
+        log.info("Route after triage: topic={}, device={}, subtopic={}, account={}", topic, device, subtopic, account);
 
         if ("greeting".equalsIgnoreCase(topic)) {
             return "greeting";
@@ -574,6 +678,11 @@ public class ChatGraph {
                 return "retrieve_respond";
             }
             return "device_check";
+        } else if ("mfa".equalsIgnoreCase(topic)) {
+            if (StringUtils.hasText(account)) {
+                return "retrieve_respond";
+            }
+            return "account_check";
         } else if ("login".equalsIgnoreCase(topic)) {
             if ("reset".equalsIgnoreCase(subtopic) || "activation".equalsIgnoreCase(subtopic)) {
                 return "retrieve_respond";
@@ -609,6 +718,18 @@ public class ChatGraph {
             return "fallback";
         }
         return "retrieve_respond";
+    }
+
+    public String routeAfterAccount(ConversationState state) {
+        log.info("Route after account: stage={}, account={}", state.getStage(), state.getAccount());
+        if (state.getStage() == Stage.FALLBACK) {
+            return "fallback";
+        }
+        if (state.getStage() == Stage.IN_MFA || state.getStage() == Stage.IN_RESET
+                || state.getStage() == Stage.IN_ACTIVATION || StringUtils.hasText(state.getAccount())) {
+            return "retrieve_respond";
+        }
+        return "account_check";
     }
 
     public ConversationState execute(String conversationId, List<ChatMessage> messages, String device) {

@@ -23,8 +23,10 @@ public class ConversationState extends MessagesState<ChatMessage> {
             "topic", Channels.base((oldVal, newVal) -> newVal),
             "device", Channels.base((oldVal, newVal) -> newVal),
             "subtopic", Channels.base((oldVal, newVal) -> newVal),
+            "account", Channels.base((oldVal, newVal) -> newVal),
             "stage", Channels.base((oldVal, newVal) -> newVal, () -> Stage.TRIAGE),
-            "deviceRetryCount", Channels.base((oldVal, newVal) -> newVal, () -> 0)
+            "deviceRetryCount", Channels.base((oldVal, newVal) -> newVal, () -> 0),
+            "accountRetryCount", Channels.base((oldVal, newVal) -> newVal, () -> 0)
     );
 
     public ConversationState(Map<String, Object> data) {
@@ -58,6 +60,15 @@ public class ConversationState extends MessagesState<ChatMessage> {
         return StringUtils.hasText(sub) ? sub : null;
     }
 
+    public Optional<String> account() {
+        return value("account");
+    }
+
+    public String getAccount() {
+        String acc = account().orElse(null);
+        return StringUtils.hasText(acc) ? acc : null;
+    }
+
     public Optional<Stage> stage() {
         return value("stage");
     }
@@ -72,6 +83,14 @@ public class ConversationState extends MessagesState<ChatMessage> {
 
     public int getDeviceRetryCount() {
         return deviceRetryCount().orElse(0);
+    }
+
+    public Optional<Integer> accountRetryCount() {
+        return value("accountRetryCount");
+    }
+
+    public int getAccountRetryCount() {
+        return accountRetryCount().orElse(0);
     }
 
     @Override

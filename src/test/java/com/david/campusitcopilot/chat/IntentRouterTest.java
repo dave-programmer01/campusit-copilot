@@ -79,11 +79,46 @@ class IntentRouterTest {
     }
 
     @Test
+    void testParseResponseMfaCuny() {
+        String json = "{\"topic\": \"mfa\", \"subtopic\": null, \"account\": \"cuny\"}";
+        Intent intent = intentRouter.parseResponse(json);
+        assertTrue(intent.isMfa());
+        assertNull(intent.subtopic());
+        assertEquals("cuny", intent.account());
+    }
+
+    @Test
+    void testParseResponseMfaMicrosoft() {
+        String json = "{\"topic\": \"mfa\", \"subtopic\": null, \"account\": \"microsoft365\"}";
+        Intent intent = intentRouter.parseResponse(json);
+        assertTrue(intent.isMfa());
+        assertNull(intent.subtopic());
+        assertEquals("microsoft365", intent.account());
+    }
+
+    @Test
+    void testParseResponseMfaAmbiguous() {
+        String json = "{\"topic\": \"mfa\", \"subtopic\": null, \"account\": null}";
+        Intent intent = intentRouter.parseResponse(json);
+        assertTrue(intent.isMfa());
+        assertNull(intent.subtopic());
+        assertNull(intent.account());
+    }
+
+    @Test
     void testParseResponseFallbackFromText() {
         String raw = "The student wants to reset their password";
         Intent intent = intentRouter.parseResponse(raw);
         assertTrue(intent.isLogin());
         assertEquals("reset", intent.subtopic());
+    }
+
+    @Test
+    void testParseResponseFallbackFromTextMfa() {
+        String raw = "I am having an MFA error on Brightspace";
+        Intent intent = intentRouter.parseResponse(raw);
+        assertTrue(intent.isMfa());
+        assertEquals("cuny", intent.account());
     }
 
     @Test

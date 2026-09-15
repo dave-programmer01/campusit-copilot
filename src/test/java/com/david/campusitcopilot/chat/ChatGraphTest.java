@@ -1078,4 +1078,253 @@ class ChatGraphTest {
         assertNotNull(result);
         assertEquals(Stage.AWAITING_DEVICE, result.getStage());
     }
+
+    // ==========================================
+    // MFA & ACCOUNT DISAMBIGUATION TESTS
+    // ==========================================
+
+    @Test
+    void testTriageNodeMfaWithAccount() {
+        when(intentRouter.route(any())).thenReturn(Intent.mfa("cuny"));
+        ConversationState state = new ConversationState(Map.of(
+                "messages", List.of(new ChatMessage("user", "MFA error on Brightspace"))
+        ));
+
+        Map<String, Object> updates = chatGraph.triageNode(state);
+        assertEquals("mfa", updates.get("topic"));
+        assertEquals("cuny", updates.get("account"));
+    }
+
+    @Test
+    void testTriageNodeMfaWithoutAccount() {
+        when(intentRouter.route(any())).thenReturn(new Intent(Intent.Topic.MFA, null, null));
+        ConversationState state = new ConversationState(Map.of(
+                "messages", List.of(new ChatMessage("user", "MFA isn't working"))
+        ));
+
+        Map<String, Object> updates = chatGraph.triageNode(state);
+        assertEquals("mfa", updates.get("topic"));
+        assertNull(updates.get("account"));
+    }
+
+    @Test
+    void testAccountCheckNode() {
+        ConversationState state = new ConversationState(Map.of());
+        Map<String, Object> updates = chatGraph.accountCheckNode(state);
+
+        assertEquals(Stage.AWAITING_ACCOUNT, updates.get("stage"));
+        @SuppressWarnings("unchecked")
+        List<ChatMessage> msgs = (List<ChatMessage>) updates.get("messages");
+        assertNotNull(msgs);
+        assertEquals(1, msgs.size());
+        assertEquals(ChatGraph.ACCOUNT_CHECK_PROMPT, msgs.get(0).content());
+    }
+
+    @Test
+    void testHandleAccountNodeCuny() {
+        ConversationState state = new ConversationState(Map.of(
+                "topic", "mfa",
+                "stage", Stage.AWAITING_ACCOUNT,
+                "messages", List.of(new ChatMessage("user", "CUNYfirst"))
+        ));
+
+        Map<String, Object> updates = chatGraph.handleAccountNode(state);
+        assertEquals("cuny", updates.get("account"));
+        assertEquals(Stage.IN_MFA, updates.get("stage"));
+        assertEquals(0, updates.get("accountRetryCount"));
+    }
+
+    @Test
+    void testHandleAccountNodeMicrosoft() {
+        ConversationState state = new ConversationState(Map.of(
+                "topic", "mfa",
+                "stage", Stage.AWAITING_ACCOUNT,
+                "messages", List.of(new ChatMessage("user", "Outlook"))
+        ));
+
+        Map<String, Object> updates = chatGraph.handleAccountNode(state);
+        assertEquals("microsoft365", updates.get("account"));
+        assertEquals(Stage.IN_MFA, updates.get("stage"));
+        assertEquals(0, updates.get("accountRetryCount"));
+    }
+
+    @Test
+    void testHandleAccountNodeRetryClarification() {
+        ConversationState state = new ConversationState(Map.of(
+                "topic", "mfa",
+                "stage", Stage.AWAITING_ACCOUNT,
+                "accountRetryCount", 0,
+                "messages", List.of(new ChatMessage("user", "i don't know"))
+        ));
+
+        Map<String, Object> updates = chatGraph.handleAccountNode(state);
+        assertNull(updates.get("account"));
+        assertEquals(Stage.AWAITING_ACCOUNT, updates.get("stage"));
+        assertEquals(1, updates.get("accountRetryCount"));
+    }
+
+    @Test
+    void testHandleAccountNodeFallbackAfterTwoAttempts() {
+        ConversationState state = new ConversationState(Map.of(
+                "topic", "mfa",
+                "stage", Stage.AWAITING_ACCOUNT,
+                "accountRetryCount", 1,
+                "messages", List.of(new ChatMessage("user", "still unsure"))
+        ));
+
+        Map<String, Object> updates = chatGraph.handleAccountNode(state);
+        assertEquals(Stage.FALLBACK, updates.get("stage"));
+        assertEquals(2, updates.get("accountRetryCount"));
+    }
+
+    @Test
+    void testRetrieveRespondNodeMfaCuny() {
+        Document doc = new Document("CUNY Login MFA steps", Map.of("topic", "mfa", "account", "cuny"));
+        when(retrievalService.search(eq("MFA error"), eq(FilterSpec.mfa("cuny")), eq(1), eq(0.0)))
+                .thenReturn(List.of(doc));
+        when(responseSpec.content()).thenReturn("Go to ssologin.cuny.edu/oaa/rui");
+
+        ConversationState state = new ConversationState(Map.of(
+                "topic", "mfa",
+                "account", "cuny",
+                "stage", Stage.AWAITING_ACCOUNT,
+                "messages", List.of(new ChatMessage("user", "MFA error"))
+        ));
+
+        Map<String, Object> updates = chatGraph.retrieveRespondNode(state);
+        assertEquals(Stage.IN_MFA, updates.get("stage"));
+        verify(retrievalService).search(eq("MFA error"), eq(FilterSpec.mfa("cuny")), eq(1), eq(0.0));
+    }
+
+    @Test
+    void testRetrieveRespondNodeMfaMicrosoft() {
+        Document doc = new Document("M365 MFA steps", Map.of("topic", "mfa", "account", "microsoft365"));
+        when(retrievalService.search(eq("Outlook authenticator"), eq(FilterSpec.mfa("microsoft365")), eq(1), eq(0.0)))
+                .thenReturn(List.of(doc));
+        when(responseSpec.content()).thenReturn("Follow Microsoft MFA prompts");
+
+        ConversationState state = new ConversationState(Map.of(
+                "topic", "mfa",
+                "account", "microsoft365",
+                "stage", Stage.TRIAGE,
+                "messages", List.of(new ChatMessage("user", "Outlook authenticator"))
+        ));
+
+        Map<String, Object> updates = chatGraph.retrieveRespondNode(state);
+        assertEquals(Stage.IN_MFA, updates.get("stage"));
+        verify(retrievalService).search(eq("Outlook authenticator"), eq(FilterSpec.mfa("microsoft365")), eq(1), eq(0.0));
+    }
+
+    @Test
+    void testEndToEndMfaBrightspaceDirectWalk() {
+        when(intentRouter.route(any())).thenReturn(Intent.mfa("cuny"));
+        Document doc = new Document("CUNY MFA steps", Map.of("topic", "mfa", "account", "cuny"));
+        when(retrievalService.search(anyString(), eq(FilterSpec.mfa("cuny")), eq(1), eq(0.0)))
+                .thenReturn(List.of(doc));
+        when(responseSpec.content()).thenReturn("Go to the CUNY Self-Service portal at ssologin.cuny.edu/oaa/rui");
+
+        ConversationState result = chatGraph.execute("conv-mfa-brightspace", new ChatMessage("user", "MFA error on Brightspace"), null);
+        assertEquals(Stage.IN_MFA, result.getStage());
+        assertEquals("mfa", result.getTopic());
+        assertEquals("cuny", result.getAccount());
+        assertEquals("Go to the CUNY Self-Service portal at ssologin.cuny.edu/oaa/rui", result.lastMessage().get().content());
+    }
+
+    @Test
+    void testEndToEndMfaOutlookDirectWalk() {
+        when(intentRouter.route(any())).thenReturn(Intent.mfa("microsoft365"));
+        Document doc = new Document("M365 MFA steps", Map.of("topic", "mfa", "account", "microsoft365"));
+        when(retrievalService.search(anyString(), eq(FilterSpec.mfa("microsoft365")), eq(1), eq(0.0)))
+                .thenReturn(List.of(doc));
+        when(responseSpec.content()).thenReturn("Open Microsoft Authenticator for Outlook");
+
+        ConversationState result = chatGraph.execute("conv-mfa-outlook", new ChatMessage("user", "can't set up authenticator for Outlook"), null);
+        assertEquals(Stage.IN_MFA, result.getStage());
+        assertEquals("mfa", result.getTopic());
+        assertEquals("microsoft365", result.getAccount());
+        assertEquals("Open Microsoft Authenticator for Outlook", result.lastMessage().get().content());
+    }
+
+    @Test
+    void testEndToEndMfaAmbiguousDisambiguationFlow() {
+        when(intentRouter.route(any())).thenReturn(new Intent(Intent.Topic.MFA, null, null));
+        Document doc = new Document("CUNY MFA steps", Map.of("topic", "mfa", "account", "cuny"));
+        when(retrievalService.search(anyString(), eq(FilterSpec.mfa("cuny")), eq(1), eq(0.0)))
+                .thenReturn(List.of(doc));
+        when(responseSpec.content()).thenReturn("Here are the CUNY MFA steps");
+
+        String convId = "conv-mfa-ambiguous";
+
+        // Turn 1: "MFA isn't working" -> asks CUNY or Microsoft
+        ConversationState state1 = chatGraph.execute(convId, new ChatMessage("user", "MFA isn't working"), null);
+        assertEquals(Stage.AWAITING_ACCOUNT, state1.getStage());
+        assertEquals(ChatGraph.ACCOUNT_CHECK_PROMPT, state1.lastMessage().get().content());
+
+        // Turn 2: "CUNYfirst" -> routes right to CUNY MFA doc
+        ConversationState state2 = chatGraph.execute(convId, new ChatMessage("user", "CUNYfirst"), null);
+        assertEquals(Stage.IN_MFA, state2.getStage());
+        assertEquals("mfa", state2.getTopic());
+        assertEquals("cuny", state2.getAccount());
+        assertEquals("Here are the CUNY MFA steps", state2.lastMessage().get().content());
+    }
+
+    @Test
+    void testEndToEndMfaMidWalkContinuation() {
+        when(intentRouter.route(any())).thenReturn(Intent.mfa("cuny"));
+        Document doc = new Document("CUNY MFA steps", Map.of("topic", "mfa", "account", "cuny"));
+        when(retrievalService.search(anyString(), eq(FilterSpec.mfa("cuny")), eq(1), eq(0.0)))
+                .thenReturn(List.of(doc));
+        when(responseSpec.content())
+                .thenReturn("Step 1: Navigate to ssologin.cuny.edu/oaa/rui")
+                .thenReturn("Step 2: Scan the QR code with your authenticator app");
+
+        String convId = "conv-mfa-midwalk";
+
+        // Turn 1: Start MFA walk
+        ConversationState state1 = chatGraph.execute(convId, new ChatMessage("user", "MFA setup for CUNYfirst"), null);
+        assertEquals(Stage.IN_MFA, state1.getStage());
+        assertEquals("cuny", state1.getAccount());
+        assertEquals("Step 1: Navigate to ssologin.cuny.edu/oaa/rui", state1.lastMessage().get().content());
+
+        // Turn 2: Follow-up mid-walk
+        ConversationState state2 = chatGraph.execute(convId, new ChatMessage("user", "ok did that what is next"), null);
+        assertEquals(Stage.IN_MFA, state2.getStage());
+        assertEquals("cuny", state2.getAccount());
+        assertEquals("Step 2: Scan the QR code with your authenticator app", state2.lastMessage().get().content());
+        verify(retrievalService, times(2)).search(anyString(), eq(FilterSpec.mfa("cuny")), eq(1), eq(0.0));
+    }
+
+    @Test
+    void testLoginResetWithAccountLehmanRegression() {
+        when(intentRouter.route(any())).thenReturn(Intent.login("reset", "lehman"));
+        Document doc = new Document("Lehman password reset steps", Map.of("topic", "login", "subtopic", "reset", "account", "lehman"));
+        when(retrievalService.search(anyString(), eq(FilterSpec.login("reset", "lehman")), eq(1), eq(0.0)))
+                .thenReturn(List.of(doc));
+        when(responseSpec.content()).thenReturn("Visit the Lehman password reset portal");
+
+        ConversationState result = chatGraph.execute("conv-login-reset-regression", new ChatMessage("user", "I forgot my password"), null);
+        assertEquals(Stage.IN_RESET, result.getStage());
+        assertEquals("login", result.getTopic());
+        assertEquals("reset", result.getSubtopic());
+        assertEquals("lehman", result.getAccount());
+        assertEquals("Visit the Lehman password reset portal", result.lastMessage().get().content());
+        verify(retrievalService).search(anyString(), eq(FilterSpec.login("reset", "lehman")), eq(1), eq(0.0));
+    }
+
+    @Test
+    void testLoginActivationWithAccountLehmanRegression() {
+        when(intentRouter.route(any())).thenReturn(Intent.login("activation", "lehman"));
+        Document doc = new Document("Lehman account activation steps", Map.of("topic", "login", "subtopic", "activation", "account", "lehman"));
+        when(retrievalService.search(anyString(), eq(FilterSpec.login("activation", "lehman")), eq(1), eq(0.0)))
+                .thenReturn(List.of(doc));
+        when(responseSpec.content()).thenReturn("Follow Lehman first-time account activation");
+
+        ConversationState result = chatGraph.execute("conv-login-act-regression", new ChatMessage("user", "new student activating my account"), null);
+        assertEquals(Stage.IN_ACTIVATION, result.getStage());
+        assertEquals("login", result.getTopic());
+        assertEquals("activation", result.getSubtopic());
+        assertEquals("lehman", result.getAccount());
+        assertEquals("Follow Lehman first-time account activation", result.lastMessage().get().content());
+        verify(retrievalService).search(anyString(), eq(FilterSpec.login("activation", "lehman")), eq(1), eq(0.0));
+    }
 }

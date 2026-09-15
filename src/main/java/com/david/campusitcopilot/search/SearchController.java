@@ -32,9 +32,10 @@ public class SearchController {
             @RequestParam("q") String q,
             @RequestParam(value = "topic", required = false) String topic,
             @RequestParam(value = "device", required = false) String device,
-            @RequestParam(value = "subtopic", required = false) String subtopic) {
+            @RequestParam(value = "subtopic", required = false) String subtopic,
+            @RequestParam(value = "account", required = false) String account) {
 
-        FilterSpec filterSpec = new FilterSpec(topic, device, subtopic);
+        FilterSpec filterSpec = new FilterSpec(topic, device, subtopic, account);
         List<Document> results = retrievalService.search(q, filterSpec, TOP_K, SIMILARITY_THRESHOLD);
 
         return results.stream()

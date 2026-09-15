@@ -28,20 +28,29 @@ class RetrievalServiceTest {
 
     @Test
     void testFilterSpecNormalizesWhitespaceAndNulls() {
-        FilterSpec spec = new FilterSpec("  wifi  ", "  macbook  ", "  ");
+        FilterSpec spec = new FilterSpec("  wifi  ", "  macbook  ", "  ", "  ");
         assertEquals("wifi", spec.topic());
         assertEquals("macbook", spec.device());
         assertNull(spec.subtopic());
+        assertNull(spec.account());
 
         FilterSpec wifiSpec = FilterSpec.wifi("iphone");
         assertEquals("wifi", wifiSpec.topic());
         assertEquals("iphone", wifiSpec.device());
         assertNull(wifiSpec.subtopic());
+        assertNull(wifiSpec.account());
 
         FilterSpec loginSpec = FilterSpec.login("activation");
         assertEquals("login", loginSpec.topic());
         assertNull(loginSpec.device());
         assertEquals("activation", loginSpec.subtopic());
+        assertEquals("lehman", loginSpec.account());
+
+        FilterSpec mfaSpec = FilterSpec.mfa("cuny");
+        assertEquals("mfa", mfaSpec.topic());
+        assertNull(mfaSpec.device());
+        assertNull(mfaSpec.subtopic());
+        assertEquals("cuny", mfaSpec.account());
     }
 
     @Test
@@ -79,6 +88,25 @@ class RetrievalServiceTest {
         assertEquals("forgot password", request.getQuery());
         assertEquals(2, request.getTopK());
         assertEquals(0.5, request.getSimilarityThreshold());
+        assertNotNull(request.getFilterExpression());
+    }
+
+    @Test
+    void testSearchWithMfaFilterSpec() {
+        Document doc = new Document("CUNY Login MFA steps", Map.of("topic", "mfa", "account", "cuny"));
+        when(vectorStore.similaritySearch(any(SearchRequest.class))).thenReturn(List.of(doc));
+
+        List<Document> results = retrievalService.search("MFA error", FilterSpec.mfa("cuny"), 1, 0.0);
+
+        assertEquals(1, results.size());
+        assertEquals("CUNY Login MFA steps", results.get(0).getText());
+
+        ArgumentCaptor<SearchRequest> captor = ArgumentCaptor.forClass(SearchRequest.class);
+        verify(vectorStore).similaritySearch(captor.capture());
+        SearchRequest request = captor.getValue();
+        assertEquals("MFA error", request.getQuery());
+        assertEquals(1, request.getTopK());
+        assertEquals(0.0, request.getSimilarityThreshold());
         assertNotNull(request.getFilterExpression());
     }
 

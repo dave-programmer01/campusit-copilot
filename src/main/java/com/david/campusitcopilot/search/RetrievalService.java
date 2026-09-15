@@ -56,6 +56,9 @@ public class RetrievalService {
         if (StringUtils.hasText(filterSpec.subtopic())) {
             ops.add(b.eq("subtopic", filterSpec.subtopic().trim()));
         }
+        if (StringUtils.hasText(filterSpec.account())) {
+            ops.add(b.eq("account", filterSpec.account().trim()));
+        }
 
         if (ops.isEmpty()) {
             return null;

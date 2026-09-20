@@ -446,6 +446,42 @@ class ChatGraphTest {
         ));
         assertEquals("diagnostic", chatGraph.routeFromRouter(s4));
 
+        // In wifi walk explicit activation stated -> retrieve_respond (bypasses diagnostic)
+        ConversationState s4b = new ConversationState(Map.of(
+                "stage", Stage.IN_WIFI_WALK,
+                "topic", "wifi",
+                "device", "iphone",
+                "messages", List.of(new ChatMessage("user", "it doesn't work, I have to activate Lehman login"))
+        ));
+        assertEquals("retrieve_respond", chatGraph.routeFromRouter(s4b));
+
+        // In wifi walk explicit reset stated -> retrieve_respond (bypasses diagnostic)
+        ConversationState s4c = new ConversationState(Map.of(
+                "stage", Stage.IN_WIFI_WALK,
+                "topic", "wifi",
+                "device", "windows-11",
+                "messages", List.of(new ChatMessage("user", "I forgot my password"))
+        ));
+        assertEquals("retrieve_respond", chatGraph.routeFromRouter(s4c));
+
+        // In wifi walk explicit MFA stated with account -> retrieve_respond
+        ConversationState s4d = new ConversationState(Map.of(
+                "stage", Stage.IN_WIFI_WALK,
+                "topic", "wifi",
+                "device", "iphone",
+                "messages", List.of(new ChatMessage("user", "MFA error on Brightspace"))
+        ));
+        assertEquals("retrieve_respond", chatGraph.routeFromRouter(s4d));
+
+        // In wifi walk explicit MFA stated without account -> account_check
+        ConversationState s4e = new ConversationState(Map.of(
+                "stage", Stage.IN_WIFI_WALK,
+                "topic", "wifi",
+                "device", "iphone",
+                "messages", List.of(new ChatMessage("user", "MFA is not working"))
+        ));
+        assertEquals("account_check", chatGraph.routeFromRouter(s4e));
+
         // In wifi walk out of band aside -> aside (does NOT drop stage)
         ConversationState s5 = new ConversationState(Map.of(
                 "stage", Stage.IN_WIFI_WALK,
@@ -1326,5 +1362,81 @@ class ChatGraphTest {
         assertEquals("lehman", result.getAccount());
         assertEquals("Follow Lehman first-time account activation", result.lastMessage().get().content());
         verify(retrievalService).search(anyString(), eq(FilterSpec.login("activation", "lehman")), eq(1), eq(0.0));
+    }
+
+    @Test
+    void testEndToEndWifiWalkToExplicitActivationShortcut() {
+        when(intentRouter.route(any())).thenReturn(Intent.wifi());
+        Document wifiDoc = new Document("iPhone WiFi steps", Map.of("topic", "wifi", "device", "iphone"));
+        Document actDoc = new Document("Lehman activation steps at managelogin.lehman.edu with 2-business-day caveat",
+                Map.of("topic", "login", "subtopic", "activation", "account", "lehman"));
+
+        when(retrievalService.search(anyString(), eq(FilterSpec.wifi("iphone")), eq(1), eq(0.0)))
+                .thenReturn(List.of(wifiDoc));
+        when(retrievalService.search(anyString(), eq(FilterSpec.login("activation", "lehman")), eq(1), eq(0.0)))
+                .thenReturn(List.of(actDoc));
+
+        when(responseSpec.content())
+                .thenReturn("Here are iPhone WiFi setup steps")
+                .thenReturn("Go to managelogin.lehman.edu to activate your login (note: 2-business-day processing window)");
+
+        String convId = "conv-wifi-to-act";
+
+        // Turn 1: "my wifi won't connect" -> asks for device
+        ConversationState s1 = chatGraph.execute(convId, new ChatMessage("user", "my wifi won't connect"), null);
+        assertEquals(Stage.AWAITING_DEVICE, s1.getStage());
+        assertEquals(ChatGraph.DEVICE_CHECK_PROMPT, s1.lastMessage().get().content());
+
+        // Turn 2: "iPhone" -> walks WiFi steps
+        ConversationState s2 = chatGraph.execute(convId, new ChatMessage("user", "iPhone"), null);
+        assertEquals(Stage.IN_WIFI_WALK, s2.getStage());
+        assertEquals("wifi", s2.getTopic());
+        assertEquals("iphone", s2.getDevice());
+        assertEquals("Here are iPhone WiFi setup steps", s2.lastMessage().get().content());
+
+        // Turn 3: "it doesn't work, I have to activate Lehman login" -> enters activation flow directly (not fallback)
+        ConversationState s3 = chatGraph.execute(convId, new ChatMessage("user", "it doesn't work, I have to activate Lehman login"), null);
+        assertEquals(Stage.IN_ACTIVATION, s3.getStage());
+        assertEquals("login", s3.getTopic());
+        assertEquals("activation", s3.getSubtopic());
+        assertEquals("lehman", s3.getAccount());
+        assertEquals("Go to managelogin.lehman.edu to activate your login (note: 2-business-day processing window)", s3.lastMessage().get().content());
+        verify(retrievalService).search(anyString(), eq(FilterSpec.login("activation", "lehman")), eq(1), eq(0.0));
+    }
+
+    @Test
+    void testEndToEndWifiWalkToExplicitResetShortcut() {
+        when(intentRouter.route(any())).thenReturn(Intent.wifi());
+        Document wifiDoc = new Document("MacBook WiFi steps", Map.of("topic", "wifi", "device", "macbook"));
+        Document resetDoc = new Document("Lehman password reset steps",
+                Map.of("topic", "login", "subtopic", "reset", "account", "lehman"));
+
+        when(retrievalService.search(anyString(), eq(FilterSpec.wifi("macbook")), eq(1), eq(0.0)))
+                .thenReturn(List.of(wifiDoc));
+        when(retrievalService.search(anyString(), eq(FilterSpec.login("reset", "lehman")), eq(1), eq(0.0)))
+                .thenReturn(List.of(resetDoc));
+
+        when(responseSpec.content())
+                .thenReturn("Here are MacBook WiFi setup steps")
+                .thenReturn("Visit password reset portal at lehman.edu/reset");
+
+        String convId = "conv-wifi-to-reset";
+
+        // Turn 1: "wifi help" -> asks device
+        ConversationState s1 = chatGraph.execute(convId, new ChatMessage("user", "wifi help"), null);
+        assertEquals(Stage.AWAITING_DEVICE, s1.getStage());
+
+        // Turn 2: "MacBook" -> walks WiFi steps
+        ConversationState s2 = chatGraph.execute(convId, new ChatMessage("user", "MacBook"), null);
+        assertEquals(Stage.IN_WIFI_WALK, s2.getStage());
+
+        // Turn 3: "I forgot my password" -> enters reset flow directly
+        ConversationState s3 = chatGraph.execute(convId, new ChatMessage("user", "I forgot my password"), null);
+        assertEquals(Stage.IN_RESET, s3.getStage());
+        assertEquals("login", s3.getTopic());
+        assertEquals("reset", s3.getSubtopic());
+        assertEquals("lehman", s3.getAccount());
+        assertEquals("Visit password reset portal at lehman.edu/reset", s3.lastMessage().get().content());
+        verify(retrievalService).search(anyString(), eq(FilterSpec.login("reset", "lehman")), eq(1), eq(0.0));
     }
 }

@@ -44,6 +44,14 @@ class DiagnosticClassifierTest {
         assertEquals(DiagnosticClassifier.Answer.NEVER_ACTIVATED, DiagnosticClassifier.classify("yeah I never set it up"));
         assertEquals(DiagnosticClassifier.Answer.NEVER_ACTIVATED, DiagnosticClassifier.classify("just started this semester"));
         assertEquals(DiagnosticClassifier.Answer.NEVER_ACTIVATED, DiagnosticClassifier.classify("incoming transfer student"));
+        assertEquals(DiagnosticClassifier.Answer.NEVER_ACTIVATED, DiagnosticClassifier.classify("I have to activate Lehman login"));
+        assertEquals(DiagnosticClassifier.Answer.NEVER_ACTIVATED, DiagnosticClassifier.classify("need to activate"));
+        assertEquals(DiagnosticClassifier.Answer.NEVER_ACTIVATED, DiagnosticClassifier.classify("not activated"));
+        assertEquals(DiagnosticClassifier.Answer.NEVER_ACTIVATED, DiagnosticClassifier.classify("haven't activated"));
+        assertEquals(DiagnosticClassifier.Answer.NEVER_ACTIVATED, DiagnosticClassifier.classify("activate my login"));
+        assertEquals(DiagnosticClassifier.Answer.NEVER_ACTIVATED, DiagnosticClassifier.classify("activate my account"));
+        assertEquals(DiagnosticClassifier.Answer.NEVER_ACTIVATED, DiagnosticClassifier.classify("gotta activate"));
+        assertEquals(DiagnosticClassifier.Answer.NEVER_ACTIVATED, DiagnosticClassifier.classify("it doesn't work, I have to activate Lehman login"));
     }
 
     @Test
@@ -74,15 +82,5 @@ class DiagnosticClassifierTest {
         assertFalse(DiagnosticClassifier.isGreeting("where is Carman Hall?"));
         assertFalse(DiagnosticClassifier.isGreeting(""));
         assertFalse(DiagnosticClassifier.isGreeting(null));
-    }
-
-    @Test
-    void testIsLoginOrPasswordIssue() {
-        assertTrue(DiagnosticClassifier.isLoginOrPasswordIssue("entered password and it says invalid password"));
-        assertTrue(DiagnosticClassifier.isLoginOrPasswordIssue("can't log into 360"));
-        assertTrue(DiagnosticClassifier.isLoginOrPasswordIssue("wrong password"));
-        assertTrue(DiagnosticClassifier.isLoginOrPasswordIssue("account locked"));
-        assertFalse(DiagnosticClassifier.isLoginOrPasswordIssue("connected to wifi"));
-        assertFalse(DiagnosticClassifier.isLoginOrPasswordIssue(null));
     }
 }

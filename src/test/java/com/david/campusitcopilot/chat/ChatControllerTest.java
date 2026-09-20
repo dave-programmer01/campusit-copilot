@@ -139,6 +139,10 @@ class ChatControllerTest {
         RetrievalService retrievalService = mock(RetrievalService.class);
         IntentRouter intentRouter = mock(IntentRouter.class);
         when(intentRouter.route(any())).thenReturn(Intent.login(null));
+        // Flow decisions on the follow-up turns come from the offline heuristic.
+        IntentRouter offlineRouter = OfflineIntentRouter.create();
+        when(intentRouter.route(anyList(), any(ConversationState.class)))
+                .thenAnswer(inv -> offlineRouter.route(inv.getArgument(0), inv.getArgument(1)));
 
         Document resetDoc =
                 new Document("Reset steps", Map.of("topic", "login", "subtopic", "reset"));

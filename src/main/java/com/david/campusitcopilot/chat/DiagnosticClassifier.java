@@ -35,6 +35,7 @@ public final class DiagnosticClassifier {
                 || lower.contains("never activated") || lower.contains("never set") || lower.contains("freshman")
                 || lower.contains("haven't set") || lower.contains("haven't activated")
                 || lower.contains("transfer student") || lower.contains("incoming")
+                || lower.matches(".*\\b(just )?(started|starting|enrolled|joined)\\b.*\\b(this|last) (semester|term|fall|spring)\\b.*")
                 || lower.contains("activate") || lower.contains("activation")) {
             return Answer.NEVER_ACTIVATED;
         }
@@ -46,7 +47,11 @@ public final class DiagnosticClassifier {
                 || lower.contains("fails") || lower.contains("failed") || lower.contains("wrong password")
                 || lower.contains("invalid password") || lower.contains("incorrect password")
                 || lower.contains("locked out") || lower.contains("account locked")
-                || lower.contains("account disabled")) {
+                || lower.contains("account disabled")
+                || lower.contains("not taking") || lower.contains("won't take") || lower.contains("wont take")
+                || lower.contains("not accepting") || lower.contains("doesn't accept") || lower.contains("does not accept")
+                || lower.contains("won't let me in") || lower.contains("wont let me in")
+                || lower.contains("not letting me in") || lower.contains("keeps rejecting")) {
             return Answer.PASSWORD_REJECTED;
         }
 
@@ -57,7 +62,8 @@ public final class DiagnosticClassifier {
                 || lower.contains("works fine") || lower.contains("it works") || lower.contains("works on")
                 || lower.contains("works elsewhere") || lower.contains("works everywhere")
                 || lower.contains("i can sign in") || lower.contains("i can log in") || lower.contains("can sign in")
-                || lower.contains("can log in") || lower.contains("lets me in") || lower.contains("able to log in")) {
+                || lower.contains("can log in") || lower.contains("lets me in") || lower.contains("able to log in")
+                || lower.matches("^(my )?(email|portal|outlook|teams|cunyfirst|brightspace|zoom|lehman 360)\\b.*\\b(works|working|fine)\\b.*")) {
             return Answer.WORKS_ELSEWHERE;
         }
 
@@ -70,6 +76,33 @@ public final class DiagnosticClassifier {
         }
         String cleaned = text.toLowerCase(Locale.ROOT).trim().replaceAll("[!.,?]+$", "").trim();
         return cleaned.matches("^(hi|hello|hey|hey there|hi there|hello there|good morning|good afternoon|good evening|howdy|sup|yo|greetings|what's up|whats up)$");
+    }
+
+    /**
+     * True when the message reports a credential being refused, as opposed to merely mentioning one.
+     * <p>
+     * Used to fork a walk to the diagnostic question: a student who hits "invalid password" while
+     * entering Wi-Fi credentials may have a dead Lehman account rather than a network problem.
+     * Both halves are required so that "ok, I typed my password, now what?" stays in the walk.
+     */
+    public static boolean isLoginOrPasswordIssue(String text) {
+        if (!StringUtils.hasText(text)) {
+            return false;
+        }
+        String lower = text.toLowerCase(Locale.ROOT);
+        boolean mentionsCredential = lower.contains("password") || lower.contains("credential")
+                || lower.contains("log in") || lower.contains("login") || lower.contains("sign in")
+                || lower.contains("signin") || lower.contains("username");
+        if (!mentionsCredential) {
+            return false;
+        }
+        return lower.contains("wrong") || lower.contains("invalid") || lower.contains("incorrect")
+                || lower.contains("rejected") || lower.contains("denied") || lower.contains("expired")
+                || lower.contains("failed") || lower.contains("fails") || lower.contains("locked")
+                || lower.contains("doesn't work") || lower.contains("does not work") || lower.contains("not working")
+                || lower.contains("won't take") || lower.contains("wont take") || lower.contains("not taking")
+                || lower.contains("not accepting") || lower.contains("won't accept")
+                || lower.contains("can't") || lower.contains("cannot") || lower.contains("cant");
     }
 
     public static boolean isOutOfBand(String text) {

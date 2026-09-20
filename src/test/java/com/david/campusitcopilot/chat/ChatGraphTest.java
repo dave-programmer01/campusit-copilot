@@ -29,6 +29,8 @@ class ChatGraphTest {
     private IntentRouter intentRouter;
     private ChatGraph chatGraph;
 
+    private static final IntentRouter offlineRouter = OfflineIntentRouter.create();
+
     private static final String TEMPLATE = "DEVICE: {{DEVICE}}\nCONTEXT: {{CONTEXT}}";
 
     @BeforeEach
@@ -45,6 +47,10 @@ class ChatGraphTest {
 
         retrievalService = mock(RetrievalService.class);
         intentRouter = mock(IntentRouter.class);
+
+        // Default the two-arg flow router to the offline heuristic; see OfflineIntentRouter.
+        when(intentRouter.route(anyList(), any(ConversationState.class)))
+                .thenAnswer(inv -> offlineRouter.route(inv.getArgument(0), inv.getArgument(1)));
 
         chatGraph = new ChatGraph(chatClient, retrievalService, intentRouter, TEMPLATE);
     }
@@ -281,6 +287,8 @@ class ChatGraphTest {
 
     @Test
     void testHandleDiagnosticNodeWorksElsewhereKnownDevice() {
+        when(intentRouter.route(anyList(), any(ConversationState.class)))
+                .thenReturn(Intent.diagnosticAnswer("works-elsewhere"));
         ConversationState state = new ConversationState(Map.of(
                 "stage", Stage.AWAITING_DIAGNOSTIC,
                 "device", "macbook",
@@ -295,6 +303,8 @@ class ChatGraphTest {
 
     @Test
     void testHandleDiagnosticNodeWorksElsewhereUnknownDevice() {
+        when(intentRouter.route(anyList(), any(ConversationState.class)))
+                .thenReturn(Intent.diagnosticAnswer("works-elsewhere"));
         ConversationState state = new ConversationState(Map.of(
                 "stage", Stage.AWAITING_DIAGNOSTIC,
                 "messages", List.of(new ChatMessage("user", "yes"))
@@ -308,6 +318,8 @@ class ChatGraphTest {
 
     @Test
     void testHandleDiagnosticNodePasswordRejected() {
+        when(intentRouter.route(anyList(), any(ConversationState.class)))
+                .thenReturn(Intent.diagnosticAnswer("password-rejected"));
         ConversationState state = new ConversationState(Map.of(
                 "stage", Stage.AWAITING_DIAGNOSTIC,
                 "messages", List.of(new ChatMessage("user", "no"))
@@ -321,6 +333,8 @@ class ChatGraphTest {
 
     @Test
     void testHandleDiagnosticNodeNeverActivated() {
+        when(intentRouter.route(anyList(), any(ConversationState.class)))
+                .thenReturn(Intent.diagnosticAnswer("never-activated"));
         ConversationState state = new ConversationState(Map.of(
                 "stage", Stage.AWAITING_DIAGNOSTIC,
                 "messages", List.of(new ChatMessage("user", "first semester here, never set it up"))
@@ -334,6 +348,8 @@ class ChatGraphTest {
 
     @Test
     void testHandleDiagnosticNodeOutOfBand() {
+        when(intentRouter.route(anyList(), any(ConversationState.class)))
+                .thenReturn(Intent.flowAside());
         ConversationState state = new ConversationState(Map.of(
                 "stage", Stage.AWAITING_DIAGNOSTIC,
                 "messages", List.of(new ChatMessage("user", "where is the library?"))
@@ -473,14 +489,32 @@ class ChatGraphTest {
         ));
         assertEquals("retrieve_respond", chatGraph.routeFromRouter(s4d));
 
-        // In wifi walk explicit MFA stated without account -> account_check
+        // In wifi walk explicit MFA stated without account -> account_check.
+        // routeFromRouter cannot see a topic switch on its own: routerNode's flow router is what
+        // moves the stage to AWAITING_ACCOUNT, and the router edge then asks the account question.
         ConversationState s4e = new ConversationState(Map.of(
                 "stage", Stage.IN_WIFI_WALK,
                 "topic", "wifi",
                 "device", "iphone",
-                "messages", List.of(new ChatMessage("user", "MFA is not working"))
+                "messages", List.of(
+                        new ChatMessage("user", "wifi won't connect"),
+                        new ChatMessage("assistant", "Step 1: open network settings"),
+                        new ChatMessage("user", "MFA is not working"))
         ));
-        assertEquals("account_check", chatGraph.routeFromRouter(s4e));
+        Map<String, Object> s4eUpdates = chatGraph.routerNode(s4e);
+        assertEquals("mfa", s4eUpdates.get("topic"));
+        assertEquals(Stage.AWAITING_ACCOUNT, s4eUpdates.get("stage"));
+
+        ConversationState s4eRouted = new ConversationState(Map.of(
+                "stage", Stage.AWAITING_ACCOUNT,
+                "topic", "mfa",
+                "device", "iphone",
+                "messages", List.of(
+                        new ChatMessage("user", "wifi won't connect"),
+                        new ChatMessage("assistant", "Step 1: open network settings"),
+                        new ChatMessage("user", "MFA is not working"))
+        ));
+        assertEquals("account_check", chatGraph.routeFromRouter(s4eRouted));
 
         // In wifi walk out of band aside -> aside (does NOT drop stage)
         ConversationState s5 = new ConversationState(Map.of(

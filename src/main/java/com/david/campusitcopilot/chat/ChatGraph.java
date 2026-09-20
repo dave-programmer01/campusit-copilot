@@ -73,6 +73,9 @@ public class ChatGraph {
     private static final String EMPTY_CONTEXT =
             "(No verified steps loaded yet. Ask what device they're on (for wifi), run the diagnostic check (for password/login), or route to the desk — do not invent steps.)";
 
+    private static final List<String> STAGE_PROMPTS = List.of(
+            DEVICE_CHECK_PROMPT, DEVICE_CHECK_ACKNOWLEDGED_PROMPT, DIAGNOSTIC_PROMPT, ACCOUNT_CHECK_PROMPT);
+
     private final ChatClient chatClient;
     private final RetrievalService retrievalService;
     private final IntentRouter intentRouter;
@@ -142,6 +145,7 @@ public class ChatGraph {
                             "handle_device", "handle_device",
                             "handle_diagnostic", "handle_diagnostic",
                             "handle_account", "handle_account",
+                            "device_check", "device_check",
                             "diagnostic", "diagnostic",
                             "account_check", "account_check",
                             "retrieve_respond", "retrieve_respond",
@@ -171,6 +175,8 @@ public class ChatGraph {
                     Map.of(
                             "device_check", "device_check",
                             "device_ack_check", "device_ack_check",
+                            "diagnostic", "diagnostic",
+                            "account_check", "account_check",
                             "retrieve_respond", "retrieve_respond",
                             "fallback", "fallback"
                     )
@@ -193,6 +199,8 @@ public class ChatGraph {
                     edge_async(this::routeAfterAccount),
                     Map.of(
                             "account_check", "account_check",
+                            "device_check", "device_check",
+                            "diagnostic", "diagnostic",
                             "retrieve_respond", "retrieve_respond",
                             "fallback", "fallback"
                     )
@@ -226,6 +234,10 @@ public class ChatGraph {
         if (stage == Stage.IN_WIFI_WALK || stage == Stage.IN_RESET
                 || stage == Stage.IN_ACTIVATION || stage == Stage.IN_MFA) {
             Intent decision = intentRouter.route(state.messages(), state);
+            if (decision == null) {
+                log.warn("Router node: flow router returned no decision -> staying in the current flow");
+                return Map.of();
+            }
             log.info("Router node: flow decision action={}, topic={}, subtopic={}, account={}",
                     decision.action(), decision.topic(), decision.subtopic(), decision.account());
 
@@ -363,7 +375,49 @@ public class ChatGraph {
 
     public Map<String, Object> handleDeviceNode(ConversationState state) {
         String msg = state.latestUserMessage();
+        Intent decision = intentRouter.route(state.messages(), state);
+        log.info("Handle-device node: flow decision={}", decision);
+
         Map<String, Object> updates = new HashMap<>();
+
+        if (decision != null && decision.isSwitch()) {
+            Intent.Topic newTopic = decision.topic();
+            String newSubtopic = decision.subtopic();
+            String newAccount = decision.account();
+            if (newTopic == Intent.Topic.MFA) {
+                log.info("Handle-device node: flow SWITCH to mfa");
+                updates.put("topic", "mfa");
+                updates.put("deviceRetryCount", 0);
+                String acc = newAccount != null ? newAccount : AccountDetector.detect(msg);
+                if (acc != null) {
+                    updates.put("account", acc);
+                    updates.put("stage", Stage.IN_MFA);
+                } else if (StringUtils.hasText(state.getAccount())) {
+                    updates.put("stage", Stage.IN_MFA);
+                } else {
+                    updates.put("stage", Stage.AWAITING_ACCOUNT);
+                }
+                return updates;
+            } else if (newTopic == Intent.Topic.LOGIN) {
+                log.info("Handle-device node: flow SWITCH to login (subtopic={})", newSubtopic);
+                updates.put("topic", "login");
+                updates.put("account", newAccount != null ? newAccount : "lehman");
+                updates.put("deviceRetryCount", 0);
+                if ("activation".equalsIgnoreCase(newSubtopic)) {
+                    updates.put("subtopic", "activation");
+                    updates.put("stage", Stage.IN_ACTIVATION);
+                } else if ("reset".equalsIgnoreCase(newSubtopic)) {
+                    updates.put("subtopic", "reset");
+                    updates.put("stage", Stage.IN_RESET);
+                } else {
+                    updates.put("stage", Stage.AWAITING_DIAGNOSTIC);
+                }
+                return updates;
+            }
+            // SWITCH to wifi (or an unclassifiable topic) is the flow we are already in —
+            // fall through to device detection below so the retry cap still applies.
+            log.info("Handle-device node: flow SWITCH to {} -> staying in device detection", newTopic);
+        }
 
         if (DiagnosticClassifier.isOutOfBand(msg)) {
             log.info("Handle-device node: out-of-band input detected, routing to fallback");
@@ -456,7 +510,7 @@ public class ChatGraph {
             updates.put("device", detected);
         }
 
-        if (decision.isSwitch()) {
+        if (decision != null && decision.isSwitch()) {
             Intent.Topic newTopic = decision.topic();
             String newSubtopic = decision.subtopic();
             String newAccount = decision.account();
@@ -494,7 +548,7 @@ public class ChatGraph {
             }
         }
 
-        String diag = decision.diagnosticAnswer();
+        String diag = decision != null ? decision.diagnosticAnswer() : heuristicDiagnosticAnswer(msg);
         if ("works-elsewhere".equalsIgnoreCase(diag)) {
             updates.put("topic", "wifi");
             updates.put("subtopic", "");
@@ -520,9 +574,74 @@ public class ChatGraph {
         return updates;
     }
 
+    /**
+     * Local diagnostic classification, used only when the flow router hands back no decision at all.
+     */
+    private static String heuristicDiagnosticAnswer(String msg) {
+        return switch (DiagnosticClassifier.classify(msg)) {
+            case WORKS_ELSEWHERE -> "works-elsewhere";
+            case PASSWORD_REJECTED -> "password-rejected";
+            case NEVER_ACTIVATED -> "never-activated";
+            default -> null;
+        };
+    }
+
     public Map<String, Object> handleAccountNode(ConversationState state) {
         String msg = state.latestUserMessage();
+        Intent decision = intentRouter.route(state.messages(), state);
+        log.info("Handle-account node: flow decision={}", decision);
+
         Map<String, Object> updates = new HashMap<>();
+        String topic = state.getTopic();
+
+        if (decision != null && decision.isSwitch()) {
+            Intent.Topic newTopic = decision.topic();
+            String newSubtopic = decision.subtopic();
+            String newAccount = decision.account();
+            if (newTopic == Intent.Topic.WIFI) {
+                log.info("Handle-account node: flow SWITCH to wifi");
+                updates.put("topic", "wifi");
+                updates.put("subtopic", "");
+                updates.put("accountRetryCount", 0);
+                String detectedDevice = DeviceDetector.detect(msg);
+                if (detectedDevice != null) {
+                    updates.put("device", detectedDevice);
+                    updates.put("stage", Stage.IN_WIFI_WALK);
+                } else if (StringUtils.hasText(state.getDevice())) {
+                    updates.put("stage", Stage.IN_WIFI_WALK);
+                } else {
+                    updates.put("stage", Stage.AWAITING_DEVICE);
+                }
+                return updates;
+            } else if (newTopic == Intent.Topic.LOGIN) {
+                log.info("Handle-account node: flow SWITCH to login (subtopic={})", newSubtopic);
+                updates.put("topic", "login");
+                updates.put("account", newAccount != null ? newAccount : "lehman");
+                updates.put("accountRetryCount", 0);
+                if ("activation".equalsIgnoreCase(newSubtopic)) {
+                    updates.put("subtopic", "activation");
+                    updates.put("stage", Stage.IN_ACTIVATION);
+                } else if ("reset".equalsIgnoreCase(newSubtopic)) {
+                    updates.put("subtopic", "reset");
+                    updates.put("stage", Stage.IN_RESET);
+                } else {
+                    updates.put("stage", Stage.AWAITING_DIAGNOSTIC);
+                }
+                return updates;
+            } else if (newTopic == Intent.Topic.MFA) {
+                log.info("Handle-account node: flow SWITCH to mfa");
+                topic = "mfa";
+                updates.put("topic", "mfa");
+                String acc = newAccount != null ? newAccount : AccountDetector.detect(msg);
+                if (acc != null) {
+                    updates.put("account", acc);
+                    updates.put("stage", Stage.IN_MFA);
+                    updates.put("accountRetryCount", 0);
+                    return updates;
+                }
+                // account still unknown — fall through so the re-ask/retry cap still applies.
+            }
+        }
 
         if (DiagnosticClassifier.isOutOfBand(msg)) {
             log.info("Handle-account node: out-of-band input detected, routing to fallback");
@@ -535,9 +654,9 @@ public class ChatGraph {
         if (detected != null) {
             log.info("Handle-account node: detected account='{}'", detected);
             updates.put("account", detected);
-            if ("mfa".equalsIgnoreCase(state.getTopic())) {
+            if ("mfa".equalsIgnoreCase(topic)) {
                 updates.put("stage", Stage.IN_MFA);
-            } else if ("login".equalsIgnoreCase(state.getTopic())) {
+            } else if ("login".equalsIgnoreCase(topic)) {
                 if ("reset".equalsIgnoreCase(state.getSubtopic())) {
                     updates.put("stage", Stage.IN_RESET);
                 } else if ("activation".equalsIgnoreCase(state.getSubtopic())) {
@@ -765,17 +884,24 @@ public class ChatGraph {
             return "aside";
         }
         if (stage == Stage.AWAITING_DEVICE) {
-            return wasLastAssistantMessage(state, DEVICE_CHECK_PROMPT)
-                    || wasLastAssistantMessage(state, DEVICE_CHECK_ACKNOWLEDGED_PROMPT)
+            return lastQuestionAsked(state, DEVICE_CHECK_PROMPT, DEVICE_CHECK_ACKNOWLEDGED_PROMPT)
                     ? "handle_device" : "device_check";
         }
         if (stage == Stage.AWAITING_DIAGNOSTIC) {
-            return wasLastAssistantMessage(state, DIAGNOSTIC_PROMPT)
+            return lastQuestionAsked(state, DIAGNOSTIC_PROMPT)
                     ? "handle_diagnostic" : "diagnostic";
         }
         if (stage == Stage.AWAITING_ACCOUNT) {
-            return wasLastAssistantMessage(state, ACCOUNT_CHECK_PROMPT)
+            return lastQuestionAsked(state, ACCOUNT_CHECK_PROMPT)
                     ? "handle_account" : "account_check";
+        }
+        // Mid-walk credential rejection: the student may have an account problem rather than a
+        // Wi-Fi problem, so fork to the diagnostic question. This only runs when routerNode's
+        // flow router chose CONTINUE — an explicit topic switch has already moved the stage on.
+        if (stage == Stage.IN_WIFI_WALK
+                && DiagnosticClassifier.isLoginOrPasswordIssue(latestUserMsg)
+                && DiagnosticClassifier.classify(latestUserMsg) != DiagnosticClassifier.Answer.NEVER_ACTIVATED) {
+            return "diagnostic";
         }
         if (stage == Stage.IN_WIFI_WALK || stage == Stage.IN_RESET
                 || stage == Stage.IN_ACTIVATION || stage == Stage.IN_MFA) {
@@ -784,18 +910,40 @@ public class ChatGraph {
         return "triage_intent";
     }
 
-    private boolean wasLastAssistantMessage(ConversationState state, String expectedPrompt) {
+    /**
+     * True when the last question we put to the student was one of {@code expectedPrompts}.
+     * <p>
+     * Only the canned stage prompts count as questions: free-form replies (walk steps, an aside
+     * answer) are transparent, so asking "where is Carman Hall?" in the middle of the device check
+     * does not cancel the device question and make us re-ask it when they finally answer.
+     */
+    private boolean lastQuestionAsked(ConversationState state, String... expectedPrompts) {
         List<ChatMessage> msgs = state.messages();
         if (msgs == null || msgs.size() < 2) {
             return true;
         }
         for (int i = msgs.size() - 2; i >= 0; i--) {
             ChatMessage m = msgs.get(i);
-            if (m != null && "assistant".equalsIgnoreCase(m.role())) {
-                return m.content() != null && m.content().trim().equals(expectedPrompt.trim());
+            if (m == null || !"assistant".equalsIgnoreCase(m.role()) || m.content() == null) {
+                continue;
             }
+            String content = m.content().trim();
+            if (!isStagePrompt(content)) {
+                continue;
+            }
+            for (String expected : expectedPrompts) {
+                if (content.equals(expected.trim())) {
+                    return true;
+                }
+            }
+            // The most recent question we asked was a different one — this stage is not awaiting it.
+            return false;
         }
         return false;
+    }
+
+    private static boolean isStagePrompt(String content) {
+        return STAGE_PROMPTS.stream().anyMatch(prompt -> prompt.trim().equals(content));
     }
 
     public String routeAfterTriage(ConversationState state) {
@@ -833,8 +981,15 @@ public class ChatGraph {
         if (state.getStage() == Stage.FALLBACK) {
             return "fallback";
         }
+        if (state.getStage() == Stage.AWAITING_ACCOUNT) {
+            return "account_check";
+        }
+        if (state.getStage() == Stage.AWAITING_DIAGNOSTIC) {
+            return "diagnostic";
+        }
         if (state.getStage() == Stage.IN_RESET || state.getStage() == Stage.IN_ACTIVATION
-                || state.getStage() == Stage.IN_WIFI_WALK || StringUtils.hasText(state.getDevice())) {
+                || state.getStage() == Stage.IN_WIFI_WALK || state.getStage() == Stage.IN_MFA
+                || StringUtils.hasText(state.getDevice())) {
             return "retrieve_respond";
         }
         if (DiagnosticClassifier.classify(state.latestUserMessage()) == DiagnosticClassifier.Answer.WORKS_ELSEWHERE) {
@@ -860,8 +1015,15 @@ public class ChatGraph {
         if (state.getStage() == Stage.FALLBACK) {
             return "fallback";
         }
+        if (state.getStage() == Stage.AWAITING_DEVICE) {
+            return "device_check";
+        }
+        if (state.getStage() == Stage.AWAITING_DIAGNOSTIC) {
+            return "diagnostic";
+        }
         if (state.getStage() == Stage.IN_MFA || state.getStage() == Stage.IN_RESET
-                || state.getStage() == Stage.IN_ACTIVATION || StringUtils.hasText(state.getAccount())) {
+                || state.getStage() == Stage.IN_ACTIVATION || state.getStage() == Stage.IN_WIFI_WALK
+                || StringUtils.hasText(state.getAccount())) {
             return "retrieve_respond";
         }
         return "account_check";

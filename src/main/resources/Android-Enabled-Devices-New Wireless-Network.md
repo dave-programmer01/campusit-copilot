@@ -14,6 +14,8 @@ On the Settings screen, tap Connections and turn on Wi-Fi.
 Tap the lehman_college network and proceed to type in your Lehman 360 username and
 password. Be sure the EAP method is set to PEAP and the CA certificate is set to
 "Don't validate". Press connect after all settings are done.
+
+heads up, this only works if your lehman login is already activated, so if you've never activated it just say so and we'll switch to that first.
 ## 4.
 The Wi-Fi status will display your connection to the lehman_college network.
 

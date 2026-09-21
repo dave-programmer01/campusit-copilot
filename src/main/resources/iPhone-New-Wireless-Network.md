@@ -18,6 +18,8 @@ Configuring iPhone for the new wireless network
 - Tap “lehman_college” and proceed to fill in the username and password with your
 Lehman 360 credentials then tap Join
 
+heads up, this only works if your lehman login is already activated, so if you've never activated it just say so and we'll switch to that first.
+
 
 
 - If successful, you’ll be prompted to trust the certificate for the wireless network. Tap

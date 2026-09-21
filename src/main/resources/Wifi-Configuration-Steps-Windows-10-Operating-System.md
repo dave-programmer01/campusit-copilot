@@ -15,6 +15,8 @@ reads "Connect automatically". Next is to click the "Connect" button.
 ## STEP 3:
 Type in your Lehman360 login credentials, which is in the form of your firstname.lastname and
 then type in your password as well. Click on "OK", after typing in your information.
+
+heads up, this only works if your lehman login is already activated, so if you've never activated it just say so and we'll switch to that first.
 ## STEP 4:
 Click on the "Connect" button and wait to be connected to WIFI network. It should say "Connected,
 secured", when it successfully connects to the network.

@@ -1399,6 +1399,156 @@ class ChatGraphTest {
     }
 
     @Test
+    void testWifiCredentialStepNeverActivatedSwitchesToActivation() {
+        when(intentRouter.route(any())).thenReturn(Intent.wifi());
+        Document wifiDoc = new Document(
+                "Proceed to type in your Lehman 360 username and password. heads up, this only works if your "
+                        + "lehman login is already activated, so if you've never activated it just say so and "
+                        + "we'll switch to that first.",
+                Map.of("topic", "wifi", "device", "macbook"));
+        Document actDoc = new Document("Lehman activation steps at managelogin.lehman.edu",
+                Map.of("topic", "login", "subtopic", "activation", "account", "lehman"));
+        when(retrievalService.search(anyString(), eq(FilterSpec.wifi("macbook")), eq(1), eq(0.0)))
+                .thenReturn(List.of(wifiDoc));
+        when(retrievalService.search(anyString(), eq(FilterSpec.login("activation", "lehman")), eq(1), eq(0.0)))
+                .thenReturn(List.of(actDoc));
+        when(responseSpec.content())
+                .thenReturn("now type in your lehman 360 username and password. heads up, this only works if your login's activated")
+                .thenReturn("say less, let's activate it first. head to managelogin.lehman.edu");
+
+        String convId = "conv-cred-step-activation";
+
+        // Turn 1: walk reaches the credential step
+        ConversationState s1 = chatGraph.execute(convId, new ChatMessage("user", "wifi won't connect"), "macbook");
+        assertEquals(Stage.IN_WIFI_WALK, s1.getStage());
+
+        // Turn 2: the student takes the heads-up at its word -> SWITCH, not CONTINUE
+        ConversationState s2 = chatGraph.execute(convId, new ChatMessage("user", "I never activated my login"), null);
+        assertEquals("login", s2.getTopic());
+        assertEquals("activation", s2.getSubtopic());
+        assertEquals("lehman", s2.getAccount());
+        assertEquals(Stage.IN_ACTIVATION, s2.getStage());
+        assertEquals("say less, let's activate it first. head to managelogin.lehman.edu",
+                s2.lastMessage().get().content());
+        verify(retrievalService).search(anyString(), eq(FilterSpec.login("activation", "lehman")), eq(1), eq(0.0));
+    }
+
+    @Test
+    void testWifiCredentialStepTerseAcknowledgementContinuesWalk() {
+        when(intentRouter.route(any())).thenReturn(Intent.wifi());
+        Document wifiDoc = new Document(
+                "Proceed to type in your Lehman 360 username and password. heads up, this only works if your "
+                        + "lehman login is already activated.",
+                Map.of("topic", "wifi", "device", "macbook"));
+        when(retrievalService.search(anyString(), eq(FilterSpec.wifi("macbook")), eq(1), eq(0.0)))
+                .thenReturn(List.of(wifiDoc));
+        when(responseSpec.content())
+                .thenReturn("now type in your lehman 360 username and password")
+                .thenReturn("nice, now click continue to trust the network");
+
+        String convId = "conv-cred-step-continue";
+
+        ConversationState s1 = chatGraph.execute(convId, new ChatMessage("user", "wifi won't connect"), "macbook");
+        assertEquals(Stage.IN_WIFI_WALK, s1.getStage());
+
+        // Turn 2: a terse acknowledgement at the same step stays in the wifi walk
+        ConversationState s2 = chatGraph.execute(convId, new ChatMessage("user", "ok"), null);
+        assertEquals("wifi", s2.getTopic());
+        assertNull(s2.getSubtopic());
+        assertEquals("macbook", s2.getDevice());
+        assertEquals(Stage.IN_WIFI_WALK, s2.getStage());
+        assertEquals("nice, now click continue to trust the network", s2.lastMessage().get().content());
+    }
+
+    @Test
+    void testEndToEndSwitchToWifiKeepsKnownDevice() {
+        when(intentRouter.route(any())).thenReturn(Intent.login("activation", "lehman"));
+        Document actDoc = new Document("Lehman activation steps",
+                Map.of("topic", "login", "subtopic", "activation", "account", "lehman"));
+        Document wifiDoc = new Document("MacBook wifi guide", Map.of("topic", "wifi", "device", "macbook"));
+        when(retrievalService.search(anyString(), eq(FilterSpec.login("activation", "lehman")), eq(1), eq(0.0)))
+                .thenReturn(List.of(actDoc));
+        when(retrievalService.search(anyString(), eq(FilterSpec.wifi("macbook")), eq(1), eq(0.0)))
+                .thenReturn(List.of(wifiDoc));
+        when(responseSpec.content())
+                .thenReturn("Go to managelogin.lehman.edu to activate your login")
+                .thenReturn("Select Lehman-WiFi on your MacBook");
+
+        String convId = "conv-keep-device";
+
+        // Turn 1: activation flow, with the student's device already known
+        ConversationState s1 = chatGraph.execute(convId, new ChatMessage("user", "I have to activate my lehman login"), "macbook");
+        assertEquals(Stage.IN_ACTIVATION, s1.getStage());
+        assertEquals("macbook", s1.getDevice());
+
+        // Turn 2: switching to wifi keeps the device — it is a fact about the student, not the flow,
+        // so the walk starts immediately instead of re-asking.
+        ConversationState s2 = chatGraph.execute(convId, new ChatMessage("user", "my wifi won't connect"), null);
+        assertEquals("wifi", s2.getTopic());
+        assertNull(s2.getSubtopic());
+        assertEquals("macbook", s2.getDevice());
+        assertEquals(Stage.IN_WIFI_WALK, s2.getStage());
+        assertEquals("Select Lehman-WiFi on your MacBook", s2.lastMessage().get().content());
+    }
+
+    @Test
+    void testEndToEndSwitchAwayFromWifiClearsDevice() {
+        when(intentRouter.route(any())).thenReturn(Intent.wifi());
+        Document wifiDoc = new Document("MacBook wifi guide", Map.of("topic", "wifi", "device", "macbook"));
+        Document resetDoc = new Document("Reset steps", Map.of("topic", "login", "subtopic", "reset"));
+        when(retrievalService.search(anyString(), eq(FilterSpec.wifi("macbook")), eq(1), eq(0.0)))
+                .thenReturn(List.of(wifiDoc));
+        when(retrievalService.search(anyString(), eq(FilterSpec.login("reset", "lehman")), eq(1), eq(0.0)))
+                .thenReturn(List.of(resetDoc));
+        when(responseSpec.content())
+                .thenReturn("Select Lehman-WiFi on your MacBook")
+                .thenReturn("Here are the password reset steps");
+
+        String convId = "conv-clear-device";
+
+        // Turn 1: wifi walk on a known device
+        ConversationState s1 = chatGraph.execute(convId, new ChatMessage("user", "wifi won't connect"), "macbook");
+        assertEquals(Stage.IN_WIFI_WALK, s1.getStage());
+        assertEquals("macbook", s1.getDevice());
+
+        // Turn 2: switching to a password reset drops the device — it means nothing to that flow.
+        ConversationState s2 = chatGraph.execute(convId, new ChatMessage("user", "I forgot my password"), null);
+        assertEquals("login", s2.getTopic());
+        assertEquals("reset", s2.getSubtopic());
+        assertNull(s2.getDevice());
+        assertEquals(Stage.IN_RESET, s2.getStage());
+    }
+
+    @Test
+    void testEndToEndActivationToWifiSwitchClearsSubtopic() {
+        when(intentRouter.route(any())).thenReturn(Intent.login("activation", "lehman"));
+        Document actDoc = new Document("Lehman activation steps",
+                Map.of("topic", "login", "subtopic", "activation", "account", "lehman"));
+        when(retrievalService.search(anyString(), eq(FilterSpec.login("activation", "lehman")), eq(1), eq(0.0)))
+                .thenReturn(List.of(actDoc));
+        when(responseSpec.content()).thenReturn("Go to managelogin.lehman.edu to activate your login");
+
+        String convId = "conv-activation-to-wifi";
+
+        // Turn 1: cold activation entry
+        ConversationState s1 = chatGraph.execute(convId, new ChatMessage("user", "I have to activate my lehman login"), null);
+        assertEquals(Stage.IN_ACTIVATION, s1.getStage());
+        assertEquals("login", s1.getTopic());
+        assertEquals("activation", s1.getSubtopic());
+
+        // Turn 2: switch to a Wi-Fi problem. The activation subtopic belongs to the abandoned
+        // flow and must not survive the switch, or retrieval filters Wi-Fi docs by it.
+        ConversationState s2 = chatGraph.execute(convId, new ChatMessage("user", "my wifi won't connect"), null);
+        assertEquals("wifi", s2.getTopic());
+        assertNull(s2.getSubtopic());
+        assertNull(s2.getDevice());  // never knew it; nothing to carry over
+        assertEquals(Stage.AWAITING_DEVICE, s2.getStage());
+        assertEquals(0, s2.getDeviceRetryCount());
+        assertEquals(0, s2.getAccountRetryCount());
+        assertEquals(ChatGraph.DEVICE_CHECK_PROMPT, s2.lastMessage().get().content());
+    }
+
+    @Test
     void testEndToEndWifiWalkToExplicitActivationShortcut() {
         when(intentRouter.route(any())).thenReturn(Intent.wifi());
         Document wifiDoc = new Document("iPhone WiFi steps", Map.of("topic", "wifi", "device", "iphone"));

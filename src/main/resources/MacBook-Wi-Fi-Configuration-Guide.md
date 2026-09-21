@@ -18,6 +18,8 @@ Select the lehman_college network
 Proceed to type in your Lehman 360 username and
 password
 
+heads up, this only works if your lehman login is already activated, so if you've never activated it just say so and we'll switch to that first.
+
 
 
 

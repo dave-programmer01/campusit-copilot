@@ -226,6 +226,94 @@ public class ChatGraph {
         }
     }
 
+    /**
+     * Moves the conversation into the topic the flow router switched to.
+     * <p>
+     * Flow-specific slots always reset: the subtopic, account and retry counters belong to the
+     * flow being abandoned, so carrying them over would steer retrieval for the new topic (an
+     * "activation" subtopic surviving a switch to Wi-Fi, say). The device is different — it is a
+     * fact about the student's hardware rather than about any one flow — so it is kept when the
+     * target topic is Wi-Fi and cleared when moving to login or MFA, where it means nothing.
+     */
+    Map<String, Object> applySwitch(ConversationState state, Intent decision) {
+        String msg = state.latestUserMessage();
+        Intent.Topic newTopic = decision.topic();
+        String newAccount = decision.account();
+
+        Map<String, Object> updates = new HashMap<>();
+        updates.put("subtopic", blankToEmpty(decision.subtopic()));
+        updates.put("deviceRetryCount", 0);
+        updates.put("accountRetryCount", 0);
+        if (newTopic != Intent.Topic.WIFI) {
+            updates.put("device", "");
+        }
+
+        if (newTopic == Intent.Topic.WIFI) {
+            updates.put("topic", "wifi");
+            String detectedDevice = DeviceDetector.detect(msg);
+            if (detectedDevice != null) {
+                updates.put("device", detectedDevice);
+                updates.put("stage", Stage.IN_WIFI_WALK);
+            } else if (StringUtils.hasText(state.getDevice())) {
+                // Still on the same machine — no need to ask again.
+                updates.put("stage", Stage.IN_WIFI_WALK);
+            } else {
+                updates.put("stage", Stage.AWAITING_DEVICE);
+            }
+        } else if (newTopic == Intent.Topic.MFA) {
+            updates.put("topic", "mfa");
+            String account = newAccount != null ? newAccount : AccountDetector.detect(msg);
+            if (account != null) {
+                updates.put("account", account);
+                updates.put("stage", Stage.IN_MFA);
+            } else {
+                updates.put("account", "");
+                updates.put("stage", Stage.AWAITING_ACCOUNT);
+            }
+        } else if (newTopic == Intent.Topic.LOGIN) {
+            updates.put("topic", "login");
+            updates.put("account", newAccount != null ? newAccount : "lehman");
+            if ("activation".equalsIgnoreCase(decision.subtopic())) {
+                updates.put("stage", Stage.IN_ACTIVATION);
+            } else if ("reset".equalsIgnoreCase(decision.subtopic())) {
+                updates.put("stage", Stage.IN_RESET);
+            } else {
+                updates.put("stage", Stage.AWAITING_DIAGNOSTIC);
+            }
+        } else if (newTopic == Intent.Topic.GREETING) {
+            updates.put("topic", "greeting");
+            updates.put("stage", Stage.TRIAGE);
+        } else {
+            updates.put("stage", Stage.FALLBACK);
+        }
+
+        log.info("Applying flow SWITCH to topic={}, subtopic={}, account={} -> stage={}",
+                updates.get("topic"), updates.get("subtopic"), updates.get("account"), updates.get("stage"));
+        return updates;
+    }
+
+    /**
+     * Slots are cleared by writing an empty value rather than null: the state channels keep the
+     * previous value when an update is absent, and {@link ConversationState} reads blank as unset.
+     */
+    private static String blankToEmpty(String value) {
+        return StringUtils.hasText(value) ? value : "";
+    }
+
+    /**
+     * True when the switch is to a different troubleshooting topic than the one this node handles.
+     * A switch back to the node's own topic is left to the node: it still needs the slot it is
+     * waiting on, and its retry cap is what stops the question repeating forever.
+     */
+    private static boolean isSwitchAwayFrom(Intent decision, Intent.Topic ownTopic) {
+        if (decision == null || !decision.isSwitch() || decision.topic() == null || decision.topic() == ownTopic) {
+            return false;
+        }
+        return decision.topic() == Intent.Topic.WIFI
+                || decision.topic() == Intent.Topic.LOGIN
+                || decision.topic() == Intent.Topic.MFA;
+    }
+
     public Map<String, Object> routerNode(ConversationState state) {
         log.info("Router node: evaluating stage={}, topic={}, device={}, subtopic={}, account={}",
                 state.getStage(), state.getTopic(), state.getDevice(), state.getSubtopic(), state.getAccount());
@@ -242,53 +330,7 @@ public class ChatGraph {
                     decision.action(), decision.topic(), decision.subtopic(), decision.account());
 
             if (decision.isSwitch()) {
-                Map<String, Object> updates = new HashMap<>();
-                Intent.Topic newTopic = decision.topic();
-                String newSubtopic = decision.subtopic();
-                String newAccount = decision.account();
-
-                if (newTopic == Intent.Topic.WIFI) {
-                    updates.put("topic", "wifi");
-                    String detectedDev = DeviceDetector.detect(state.latestUserMessage());
-                    if (detectedDev != null) {
-                        updates.put("device", detectedDev);
-                        updates.put("stage", Stage.IN_WIFI_WALK);
-                    } else if (StringUtils.hasText(state.getDevice())) {
-                        updates.put("stage", Stage.IN_WIFI_WALK);
-                    } else {
-                        updates.put("stage", Stage.AWAITING_DEVICE);
-                    }
-                } else if (newTopic == Intent.Topic.MFA) {
-                    updates.put("topic", "mfa");
-                    String detectedAcc = newAccount != null ? newAccount : AccountDetector.detect(state.latestUserMessage());
-                    if (detectedAcc != null) {
-                        updates.put("account", detectedAcc);
-                        updates.put("stage", Stage.IN_MFA);
-                    } else if (StringUtils.hasText(state.getAccount())) {
-                        updates.put("stage", Stage.IN_MFA);
-                    } else {
-                        updates.put("stage", Stage.AWAITING_ACCOUNT);
-                    }
-                } else if (newTopic == Intent.Topic.LOGIN) {
-                    updates.put("topic", "login");
-                    String acc = newAccount != null ? newAccount : (state.getAccount() != null ? state.getAccount() : "lehman");
-                    updates.put("account", acc);
-                    if ("activation".equalsIgnoreCase(newSubtopic)) {
-                        updates.put("subtopic", "activation");
-                        updates.put("stage", Stage.IN_ACTIVATION);
-                    } else if ("reset".equalsIgnoreCase(newSubtopic)) {
-                        updates.put("subtopic", "reset");
-                        updates.put("stage", Stage.IN_RESET);
-                    } else {
-                        updates.put("stage", Stage.AWAITING_DIAGNOSTIC);
-                    }
-                } else if (newTopic == Intent.Topic.GREETING) {
-                    updates.put("topic", "greeting");
-                    updates.put("stage", Stage.TRIAGE);
-                } else {
-                    updates.put("stage", Stage.FALLBACK);
-                }
-                return updates;
+                return applySwitch(state, decision);
             }
 
             if (decision.isDiagnosticAnswer()) {
@@ -378,46 +420,12 @@ public class ChatGraph {
         Intent decision = intentRouter.route(state.messages(), state);
         log.info("Handle-device node: flow decision={}", decision);
 
-        Map<String, Object> updates = new HashMap<>();
-
-        if (decision != null && decision.isSwitch()) {
-            Intent.Topic newTopic = decision.topic();
-            String newSubtopic = decision.subtopic();
-            String newAccount = decision.account();
-            if (newTopic == Intent.Topic.MFA) {
-                log.info("Handle-device node: flow SWITCH to mfa");
-                updates.put("topic", "mfa");
-                updates.put("deviceRetryCount", 0);
-                String acc = newAccount != null ? newAccount : AccountDetector.detect(msg);
-                if (acc != null) {
-                    updates.put("account", acc);
-                    updates.put("stage", Stage.IN_MFA);
-                } else if (StringUtils.hasText(state.getAccount())) {
-                    updates.put("stage", Stage.IN_MFA);
-                } else {
-                    updates.put("stage", Stage.AWAITING_ACCOUNT);
-                }
-                return updates;
-            } else if (newTopic == Intent.Topic.LOGIN) {
-                log.info("Handle-device node: flow SWITCH to login (subtopic={})", newSubtopic);
-                updates.put("topic", "login");
-                updates.put("account", newAccount != null ? newAccount : "lehman");
-                updates.put("deviceRetryCount", 0);
-                if ("activation".equalsIgnoreCase(newSubtopic)) {
-                    updates.put("subtopic", "activation");
-                    updates.put("stage", Stage.IN_ACTIVATION);
-                } else if ("reset".equalsIgnoreCase(newSubtopic)) {
-                    updates.put("subtopic", "reset");
-                    updates.put("stage", Stage.IN_RESET);
-                } else {
-                    updates.put("stage", Stage.AWAITING_DIAGNOSTIC);
-                }
-                return updates;
-            }
-            // SWITCH to wifi (or an unclassifiable topic) is the flow we are already in —
-            // fall through to device detection below so the retry cap still applies.
-            log.info("Handle-device node: flow SWITCH to {} -> staying in device detection", newTopic);
+        if (isSwitchAwayFrom(decision, Intent.Topic.WIFI)) {
+            log.info("Handle-device node: flow SWITCH to {}", decision.topic());
+            return applySwitch(state, decision);
         }
+
+        Map<String, Object> updates = new HashMap<>();
 
         if (DiagnosticClassifier.isOutOfBand(msg)) {
             log.info("Handle-device node: out-of-band input detected, routing to fallback");
@@ -504,48 +512,15 @@ public class ChatGraph {
         Intent decision = intentRouter.route(state.messages(), state);
         log.info("Handle-diagnostic node: flow decision={}", decision);
 
+        if (decision != null && decision.isSwitch()) {
+            log.info("Handle-diagnostic node: flow SWITCH to {}", decision.topic());
+            return applySwitch(state, decision);
+        }
+
         Map<String, Object> updates = new HashMap<>();
         String detected = DeviceDetector.detect(msg);
         if (detected != null) {
             updates.put("device", detected);
-        }
-
-        if (decision != null && decision.isSwitch()) {
-            Intent.Topic newTopic = decision.topic();
-            String newSubtopic = decision.subtopic();
-            String newAccount = decision.account();
-            if (newTopic == Intent.Topic.MFA) {
-                updates.put("topic", "mfa");
-                String acc = newAccount != null ? newAccount : AccountDetector.detect(msg);
-                if (acc != null) {
-                    updates.put("account", acc);
-                    updates.put("stage", Stage.IN_MFA);
-                } else {
-                    updates.put("stage", Stage.AWAITING_ACCOUNT);
-                }
-                return updates;
-            } else if (newTopic == Intent.Topic.WIFI) {
-                updates.put("topic", "wifi");
-                if (detected != null || StringUtils.hasText(state.getDevice())) {
-                    updates.put("stage", Stage.IN_WIFI_WALK);
-                } else {
-                    updates.put("stage", Stage.AWAITING_DEVICE);
-                }
-                return updates;
-            } else if (newTopic == Intent.Topic.LOGIN) {
-                updates.put("topic", "login");
-                updates.put("account", newAccount != null ? newAccount : "lehman");
-                if ("activation".equalsIgnoreCase(newSubtopic)) {
-                    updates.put("subtopic", "activation");
-                    updates.put("stage", Stage.IN_ACTIVATION);
-                } else if ("reset".equalsIgnoreCase(newSubtopic)) {
-                    updates.put("subtopic", "reset");
-                    updates.put("stage", Stage.IN_RESET);
-                } else {
-                    updates.put("stage", Stage.AWAITING_DIAGNOSTIC);
-                }
-                return updates;
-            }
         }
 
         String diag = decision != null ? decision.diagnosticAnswer() : heuristicDiagnosticAnswer(msg);
@@ -591,57 +566,13 @@ public class ChatGraph {
         Intent decision = intentRouter.route(state.messages(), state);
         log.info("Handle-account node: flow decision={}", decision);
 
+        if (isSwitchAwayFrom(decision, Intent.Topic.MFA)) {
+            log.info("Handle-account node: flow SWITCH to {}", decision.topic());
+            return applySwitch(state, decision);
+        }
+
         Map<String, Object> updates = new HashMap<>();
         String topic = state.getTopic();
-
-        if (decision != null && decision.isSwitch()) {
-            Intent.Topic newTopic = decision.topic();
-            String newSubtopic = decision.subtopic();
-            String newAccount = decision.account();
-            if (newTopic == Intent.Topic.WIFI) {
-                log.info("Handle-account node: flow SWITCH to wifi");
-                updates.put("topic", "wifi");
-                updates.put("subtopic", "");
-                updates.put("accountRetryCount", 0);
-                String detectedDevice = DeviceDetector.detect(msg);
-                if (detectedDevice != null) {
-                    updates.put("device", detectedDevice);
-                    updates.put("stage", Stage.IN_WIFI_WALK);
-                } else if (StringUtils.hasText(state.getDevice())) {
-                    updates.put("stage", Stage.IN_WIFI_WALK);
-                } else {
-                    updates.put("stage", Stage.AWAITING_DEVICE);
-                }
-                return updates;
-            } else if (newTopic == Intent.Topic.LOGIN) {
-                log.info("Handle-account node: flow SWITCH to login (subtopic={})", newSubtopic);
-                updates.put("topic", "login");
-                updates.put("account", newAccount != null ? newAccount : "lehman");
-                updates.put("accountRetryCount", 0);
-                if ("activation".equalsIgnoreCase(newSubtopic)) {
-                    updates.put("subtopic", "activation");
-                    updates.put("stage", Stage.IN_ACTIVATION);
-                } else if ("reset".equalsIgnoreCase(newSubtopic)) {
-                    updates.put("subtopic", "reset");
-                    updates.put("stage", Stage.IN_RESET);
-                } else {
-                    updates.put("stage", Stage.AWAITING_DIAGNOSTIC);
-                }
-                return updates;
-            } else if (newTopic == Intent.Topic.MFA) {
-                log.info("Handle-account node: flow SWITCH to mfa");
-                topic = "mfa";
-                updates.put("topic", "mfa");
-                String acc = newAccount != null ? newAccount : AccountDetector.detect(msg);
-                if (acc != null) {
-                    updates.put("account", acc);
-                    updates.put("stage", Stage.IN_MFA);
-                    updates.put("accountRetryCount", 0);
-                    return updates;
-                }
-                // account still unknown — fall through so the re-ask/retry cap still applies.
-            }
-        }
 
         if (DiagnosticClassifier.isOutOfBand(msg)) {
             log.info("Handle-account node: out-of-band input detected, routing to fallback");

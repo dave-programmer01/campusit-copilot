@@ -105,6 +105,26 @@ public final class DiagnosticClassifier {
                 || lower.contains("can't") || lower.contains("cannot") || lower.contains("cant");
     }
 
+    /**
+     * True when the message is a "no" to the Wi-Fi credential step's activation heads-up
+     * ("this only works if your lehman login is already activated").
+     * <p>
+     * Word-bounded on purpose: {@link #classify} treats any "no..." prefix as a rejection, which
+     * would turn "now what?" at the credential step into a switch to activation.
+     */
+    public static boolean isActivationDenial(String text) {
+        if (!StringUtils.hasText(text)) {
+            return false;
+        }
+        String lower = text.toLowerCase(Locale.ROOT).trim().replace('’', '\'');
+        return lower.matches("^(no|nope|nah|not yet|not really|never|negative|i don't think so|i dont think so"
+                        + "|it doesn't|it doesnt|it does not|doesn't|doesnt|it isn't|it isnt|it's not|its not|it is not"
+                        + "|i never|i haven't|i havent|i didn't|i didnt)\\b.*")
+                || lower.contains("not activated") || lower.contains("isn't activated")
+                || lower.contains("never activated") || lower.contains("not working")
+                || lower.contains("doesn't work") || lower.contains("does not work");
+    }
+
     public static boolean isOutOfBand(String text) {
         if (!StringUtils.hasText(text)) {
             return false;

@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.client.ChatClient;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -237,5 +238,54 @@ class IntentRouterTest {
 
         assertTrue(intent.isUnknown());
         assertNull(intent.subtopic());
+    }
+    private static final String ACTIVATION_HEADS_UP = "now type in your lehman 360 username and password. heads up, "
+            + "this only works if your lehman login is already activated, so if you've never activated it just say so "
+            + "and we'll switch to that first.";
+
+    private void llmDown() {
+        when(chatClient.prompt().system(anyString()).user(anyString()).call().content())
+                .thenThrow(new RuntimeException("LLM down"));
+    }
+
+    private Intent routeWifiWalk(String lastAssistant, String reply) {
+        List<ChatMessage> history = List.of(
+                new ChatMessage("user", "wifi won't connect"),
+                new ChatMessage("assistant", lastAssistant),
+                new ChatMessage("user", reply)
+        );
+        ConversationState state = new ConversationState(Map.of(
+                "messages", history, "topic", "wifi", "device", "macbook", "stage", Stage.IN_WIFI_WALK));
+        return intentRouter.route(history, state);
+    }
+
+    @Test
+    void testFlowFallbackNegativeToActivationHeadsUpSwitchesToActivation() {
+        llmDown();
+        for (String reply : List.of("it doesn't", "not activated", "no", "it's not working", "nope, never did")) {
+            Intent intent = routeWifiWalk(ACTIVATION_HEADS_UP, reply);
+            assertTrue(intent.isSwitch(), "expected SWITCH for '" + reply + "'");
+            assertEquals(Intent.Topic.LOGIN, intent.topic());
+            assertEquals("activation", intent.subtopic());
+            assertEquals("lehman", intent.account());
+        }
+    }
+
+    @Test
+    void testFlowFallbackNeutralReplyToActivationHeadsUpContinuesWalk() {
+        llmDown();
+        for (String reply : List.of("ok", "done", "now what?", "yes it is")) {
+            Intent intent = routeWifiWalk(ACTIVATION_HEADS_UP, reply);
+            assertFalse(intent.isSwitch(), "expected CONTINUE for '" + reply + "'");
+            assertEquals(Intent.Topic.WIFI, intent.topic());
+        }
+    }
+
+    @Test
+    void testFlowFallbackNegativeWithoutHeadsUpContinuesWalk() {
+        llmDown();
+        Intent intent = routeWifiWalk("click the wifi icon and pick Lehman-WiFi", "it doesn't");
+        assertFalse(intent.isSwitch());
+        assertEquals(Intent.Topic.WIFI, intent.topic());
     }
 }

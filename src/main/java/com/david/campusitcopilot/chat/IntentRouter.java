@@ -58,10 +58,12 @@ public class IntentRouter {
             - Acknowledging steps ("ok", "done", "got it", "did that", "next", "what next", "still stuck", "it worked", "it failed", "I don't see that button").
             - Terse answers to questions asked during the walk ("yes", "no", "sure", "ok").
             - Asking for clarification on current steps.
-            CRITICAL BIAS: Default to CONTINUE. Only choose SWITCH if the student makes an explicit, unambiguous request for a completely different IT topic. Terse answers ("yes", "no", "ok", "done", "next") in an active walk MUST ALWAYS be CONTINUE.
+            CRITICAL BIAS: Default to CONTINUE. Only choose SWITCH if the student makes an explicit, unambiguous request for a completely different IT topic. Terse answers ("yes", "no", "ok", "done", "next") in an active walk MUST ALWAYS be CONTINUE — with the one exception below.
+
+            EXCEPTION — ACTIVATION HEADS-UP: At the Wi-Fi credential step the assistant warns that the step only works if the student's Lehman login is already activated, and promises to switch to activation first if it isn't. When the assistant's most recent message carries that heads-up (it says the login needs to be activated), a negative reply is the student taking up that offer, not a terse walk answer. It MUST be SWITCH with topic "login", subtopic "activation", account "lehman". This includes "no", "nope", "it doesn't", "it isn't", "not activated", "I never did", "I don't think so", "not yet", "it's not working". Affirmative or neutral replies ("yes", "it is", "ok", "done", "next") stay CONTINUE.
 
             2. "SWITCH":
-            The student clearly and explicitly requests help with a different IT problem (e.g., they were in Wi-Fi troubleshooting and say "I need to reset my password", "I have to activate Lehman login", "actually I need help with Brightspace MFA").
+            The student clearly and explicitly requests help with a different IT problem (e.g., they were in Wi-Fi troubleshooting and say "I need to reset my password", "I have to activate Lehman login", "actually I need help with Brightspace MFA"), or answers the activation heads-up negatively (see the exception above).
             When action is "SWITCH", identify the new:
             - topic: "wifi" | "login" | "mfa" | "greeting" | "unknown"
             - subtopic: (for "login") "activation" | "reset" | null
@@ -393,6 +395,12 @@ public class IntentRouter {
             };
         }
 
+        // The credential step's activation heads-up promises a switch; a "no" to it is that switch.
+        if (stage == Stage.IN_WIFI_WALK && lastAssistantMentionsActivation(history)
+                && DiagnosticClassifier.isActivationDenial(latest)) {
+            return Intent.flowSwitch(Intent.Topic.LOGIN, "activation", "lehman");
+        }
+
         String lower = latest.toLowerCase(Locale.ROOT);
         String detectedAccount = AccountDetector.detect(latest);
 
@@ -431,5 +439,15 @@ public class IntentRouter {
         String subtopic = state != null ? state.getSubtopic() : null;
         String account = state != null ? state.getAccount() : null;
         return Intent.flowContinue(currentTopic, subtopic, account);
+    }
+
+    private static boolean lastAssistantMentionsActivation(List<ChatMessage> history) {
+        for (int i = history.size() - 1; i >= 0; i--) {
+            ChatMessage msg = history.get(i);
+            if (msg != null && "assistant".equalsIgnoreCase(msg.role()) && msg.content() != null) {
+                return msg.content().toLowerCase(Locale.ROOT).contains("activat");
+            }
+        }
+        return false;
     }
 }
